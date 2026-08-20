@@ -1,0 +1,37 @@
+services:
+  float-tasks-db:
+    image: postgres:latest
+    container_name: postgres-db
+    restart: always
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: dev123
+      POSTGRES_DB: dev-database
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+
+  float-tasks:
+    image: float-tasks
+    build: .
+    ports:
+      - "8000:8000"
+    depends_on:
+      - float-tasks-db
+    entrypoint: ./entrypoint.sh
+    environment:
+      DATABASE_URL: "postgresql+psycopg://root:dev123@float-tasks-db:5432/dev-database"
+
+
+  adminer:
+    image: adminer:latest
+    container_name: adminer-web
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - float-tasks-db
+
+volumes:
+  pgdata:

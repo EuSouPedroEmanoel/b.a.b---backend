@@ -1,0 +1,8 @@
+repos:
+  - repo: local
+    hooks:
+      - id: task-check
+        name: Executar Task via Poetry
+        entry: poetry run task test
+        language: system
+        pass_filenames: false

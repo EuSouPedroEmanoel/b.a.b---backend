@@ -1,0 +1,42 @@
+name: pipeline
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      ALGORITHM: ${{ secrets.ALGORITHM }}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${{ secrets.ACCESS_TOKEN_EXPIRE_MINUTES }}
+
+    steps:
+      - name: Copia Arquivos do Projeto
+        uses: actions/checkout@v7
+
+      - name: Subir banco de dados com Docker Compose
+        run: docker compose up -d float-tasks-db
+
+      - name: Aguardar o PostgreSQL inicializar
+        run: |
+          until docker exec postgres-db pg_isready -U root -d dev-database; do
+            echo "Aguardando conexão com o PostgreSQL..."
+            sleep 2
+          done
+
+      - name: Instalar Poetry
+        run: pipx install poetry
+
+      - name: Instalar o Python e Configurar Cache
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+          allow-prereleases: true
+          cache: 'poetry'
+
+      - name: Instalar Dependências
+        run: poetry install --no-interaction
+
+      - name: Executar Testes
+        run: poetry run task test
