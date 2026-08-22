@@ -3,41 +3,47 @@ from http import HTTPStatus
 from scr.schemas import UserPublic
 
 
-def test_create_user(client):
-
+def test_create_user(client, school, super_admin_token):
     response = client.post(
         '/users/',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
         json={
             'username': 'alice',
             'email': 'alice@exemple.com',
             'password': 'S3cr3t!123',
+            'role': 'librarian',
+            'school_id': school.id,
         },
     )
 
     assert response.status_code == HTTPStatus.CREATED
-    assert response.json() == {
-        'id': 1,
-        'username': 'alice',
-        'email': 'alice@exemple.com',
-    }
+    assert response.json()['username'] == 'alice'
+    assert response.json()['email'] == 'alice@exemple.com'
+    assert response.json()['school_id'] == school.id
 
 
-def test_create_user_integraty(client):
+def test_create_user_integraty(client, school, super_admin_token):
     client.post(
         '/users/',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
         json={
             'username': 'fausto',
             'email': 'fausto@exemple.lol',
             'password': 'secret',
+            'role': 'librarian',
+            'school_id': school.id,
         },
     )
 
     actual_update = client.post(
         '/users/',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
         json={
             'username': 'fausto',
             'email': 'bob@exemple.lol',
             'password': 'newsecret',
+            'role': 'librarian',
+            'school_id': school.id,
         },
     )
 
@@ -57,15 +63,21 @@ def test_read_users(client, user, token):
     assert response.json() == {'users': [user_schema]}
 
 
-def test_read_user_by_id(client, user):
-    response = client.get(f'/users/{user.id}')
+def test_read_user_by_id(client, user, token):
+    response = client.get(
+        f'/users/{user.id}',
+        headers={'Authorization': f'Bearer {token}'},
+    )
 
     assert response.status_code == HTTPStatus.OK
     assert response.json() == UserPublic.model_validate(user).model_dump()
 
 
-def test_raise_read_user_by_id(client):
-    response = client.get('/users/1')
+def test_raise_read_user_by_id(client, user, token):
+    response = client.get(
+        '/users/9999',
+        headers={'Authorization': f'Bearer {token}'},
+    )
 
     assert response.status_code == HTTPStatus.NOT_FOUND
     assert response.json() == {'detail': 'User Not Found...'}
@@ -83,20 +95,26 @@ def test_update_user(client, user, token):
     )
 
     assert response.status_code == HTTPStatus.OK
-    assert response.json() == {
-        'username': 'Pedro',
-        'email': 'pedro@email.ai',
-        'id': 1,
-    }
+    data = response.json()
+    assert data['username'] == 'Pedro'
+    assert data['email'] == 'pedro@email.ai'
+    assert data['id'] == user.id
+    assert data['role'] == user.role
+    assert data['school_id'] == user.school_id
 
 
-def test_update_integrity_error(client, user, token):
+def test_update_integrity_error(
+    client, user, token, school, super_admin_token
+):
     client.post(
-        '/users',
+        '/users/',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
         json={
             'username': 'fausto',
             'email': 'fausto@exemple.lol',
             'password': 'secret',
+            'role': 'librarian',
+            'school_id': school.id,
         },
     )
 

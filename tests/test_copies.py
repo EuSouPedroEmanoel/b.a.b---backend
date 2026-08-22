@@ -7,7 +7,7 @@ from scr.schemas import BookCopyPublic
 from tests.factories import BookCopyFactory, BookFactory
 
 
-def test_create_book_copy(client, token, book):
+def test_create_book_copy(client, token, book, user):
     book_id = book.id
     user_id = book.user_id
 
@@ -22,16 +22,13 @@ def test_create_book_copy(client, token, book):
     )
 
     assert response.status_code == HTTPStatus.CREATED
-    assert response.json() == {
-        'id': 1,
-        'book_id': book_id,
-        'user_id': user_id,
-        'internal_code': 'EX-0001',
-        'state': 'available',
-        'condition': 'new',
-        'acquisition_date': None,
-        'notes': None,
-    }
+    data = response.json()
+    assert data['book_id'] == book_id
+    assert data['user_id'] == user_id
+    assert data['school_id'] == user.school_id
+    assert data['internal_code'] == 'EX-0001'
+    assert data['state'] == 'available'
+    assert data['condition'] == 'new'
 
 
 def test_create_book_copy_book_not_found(client, token):
@@ -51,10 +48,13 @@ async def test_create_book_copy_duplicate_internal_code(
 ):
     book_id = book.id
     copy_code = BookCopyFactory.build(
-        book_id=book_id, user_id=user.id
+        book_id=book_id, user_id=user.id, school_id=user.school_id
     ).internal_code
     copy = BookCopyFactory(
-        book_id=book_id, user_id=user.id, internal_code=copy_code
+        book_id=book_id,
+        user_id=user.id,
+        school_id=user.school_id,
+        internal_code=copy_code,
     )
     session.add(copy)
     await session.commit()
@@ -84,7 +84,9 @@ async def test_create_book_copy_from_other_user_book(
         json={'internal_code': 'EX-0003'},
     )
 
-    assert response.status_code == HTTPStatus.NOT_FOUND
+    # RBAC: qualquer usuário de escola pode criar cópia
+    assert response.status_code == HTTPStatus.CREATED
+    assert response.json()['book_id'] == book_other_user.id
 
 
 @pytest.mark.asyncio
@@ -93,7 +95,10 @@ async def test_list_copies_should_return_5_copies(
 ):
     expected_copies = 5
     copies = BookCopyFactory.create_batch(
-        expected_copies, book_id=book.id, user_id=user.id
+        expected_copies,
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
     )
 
     session.add_all(copies)
@@ -122,7 +127,12 @@ async def test_list_copies_should_return_5_copies(
 async def test_list_copies_pagination_should_return_2_copies(
     session, client, user, token, book
 ):
-    copies = BookCopyFactory.create_batch(5, book_id=book.id, user_id=user.id)
+    copies = BookCopyFactory.create_batch(
+        5,
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+    )
     expected_copies = 2
 
     session.add_all(copies)
@@ -153,12 +163,16 @@ async def test_list_copies_filter_state_should_return_5_copies(
 ):
     expected_copies = 5
     copies = BookCopyFactory.create_batch(
-        expected_copies, book_id=book.id, user_id=user.id
+        expected_copies,
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
     )
     other_copies = BookCopyFactory.create_batch(
         expected_copies,
         book_id=book.id,
         user_id=user.id,
+        school_id=user.school_id,
         state=BooksStates.BORROWED,
     )
 
@@ -191,12 +205,16 @@ async def test_list_copies_filter_condition_should_return_5_copies(
 ):
     expected_copies = 5
     copies = BookCopyFactory.create_batch(
-        expected_copies, book_id=book.id, user_id=user.id
+        expected_copies,
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
     )
     other_copies = BookCopyFactory.create_batch(
         expected_copies,
         book_id=book.id,
         user_id=user.id,
+        school_id=user.school_id,
         condition=BookCondition.POOR,
     )
 
@@ -225,7 +243,11 @@ async def test_list_copies_filter_condition_should_return_5_copies(
 
 @pytest.mark.asyncio
 async def test_get_copy_by_id(session, client, user, token, book):
-    copy = BookCopyFactory(book_id=book.id, user_id=user.id)
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+    )
     session.add(copy)
     await session.commit()
     await session.refresh(copy)
@@ -250,7 +272,11 @@ def test_get_copy_error(client, token):
 
 @pytest.mark.asyncio
 async def test_patch_copy(session, client, user, token, book):
-    copy = BookCopyFactory(book_id=book.id, user_id=user.id)
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+    )
     session.add(copy)
     await session.commit()
     await session.refresh(copy)
@@ -279,7 +305,11 @@ def test_patch_copy_error(client, token):
 
 @pytest.mark.asyncio
 async def test_delete_copy(session, client, user, token, book):
-    copy = BookCopyFactory(book_id=book.id, user_id=user.id)
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+    )
     session.add(copy)
     await session.commit()
     await session.refresh(copy)
@@ -305,20 +335,26 @@ def test_delete_copy_error(client, token):
 
 
 @pytest.mark.asyncio
-async def test_delete_book_cascades_copies(session, client, user, token, book):
-    copy = BookCopyFactory(book_id=book.id, user_id=user.id)
+async def test_delete_book_cascades_copies(
+    session, client, user, super_admin_token, book
+):
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+    )
     session.add(copy)
     await session.commit()
     await session.refresh(copy)
 
     response = client.delete(
         f'/books/{book.id}',
-        headers={'Authorization': f'Bearer {token}'},
+        headers={'Authorization': f'Bearer {super_admin_token}'},
     )
     assert response.status_code == HTTPStatus.OK
 
     response = client.get(
         f'/copies/{copy.id}',
-        headers={'Authorization': f'Bearer {token}'},
+        headers={'Authorization': f'Bearer {super_admin_token}'},
     )
     assert response.status_code == HTTPStatus.NOT_FOUND

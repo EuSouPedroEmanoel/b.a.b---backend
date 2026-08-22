@@ -5,14 +5,19 @@ from sqlalchemy import select
 from sqlalchemy.exc import StatementError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from scr.models import User
+from scr.models import User, UserRole
 from tests.factories import BookFactory
 
 
 @pytest.mark.asyncio
 async def test_create_user(session: AsyncSession, mock_db_time):
     with mock_db_time(model=User) as time:
-        new_user = User(username='test', email='test@test', password='secret')
+        new_user = User(
+            username='test',
+            email='test@test',
+            password='secret',
+            role=UserRole.SUPER_ADMIN,
+        )
 
         session.add(new_user)
         await session.commit()
@@ -26,6 +31,9 @@ async def test_create_user(session: AsyncSession, mock_db_time):
         'username': 'test',
         'email': 'test@test',
         'password': 'secret',
+        'role': UserRole.SUPER_ADMIN,
+        'school_id': None,
+        'school': None,
         'created_at': time,
         'updated_at': time,
         'books': [],

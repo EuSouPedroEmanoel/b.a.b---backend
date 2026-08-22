@@ -4,7 +4,7 @@ import pytest
 
 from scr.models import BooksStates
 from scr.schemas import BooksPublic
-from tests.factories import BookFactory
+from tests.factories import BookCopyFactory, BookFactory
 
 
 def test_create_book(client, token):
@@ -108,6 +108,16 @@ async def test_list_books_should_return_5_books(session, client, user, token):
         for t in books
     ]
 
+    # Tenant isolation: list_books filters by BookCopy.school_id
+    copies = [
+        BookCopyFactory(
+            book_id=book.id, user_id=user.id, school_id=user.school_id
+        )
+        for book in books
+    ]
+    session.add_all(copies)
+    await session.commit()
+
     response = client.get(
         '/books/',
         headers={'Authorization': f'Bearer {token}'},
@@ -137,6 +147,15 @@ async def test_list_books_pagination_should_return_2_books(
         for t in books[1:3]
     ]
 
+    copies = [
+        BookCopyFactory(
+            book_id=book.id, user_id=user.id, school_id=user.school_id
+        )
+        for book in books
+    ]
+    session.add_all(copies)
+    await session.commit()
+
     response = client.get(
         '/books/?offset=1&limit=2',
         headers={'Authorization': f'Bearer {token}'},
@@ -161,7 +180,7 @@ async def test_list_books_filter_title_should_return_5_books(
     session.add_all(books + other_books)
     await session.commit()
 
-    for book in books:
+    for book in books + other_books:
         await session.refresh(book)
 
     expected_json = [
@@ -170,6 +189,17 @@ async def test_list_books_filter_title_should_return_5_books(
         )
         for t in books
     ]
+
+    # copies for all books so tenant filter passes
+    all_books = books + other_books
+    copies = [
+        BookCopyFactory(
+            book_id=b.id, user_id=user.id, school_id=user.school_id
+        )
+        for b in all_books
+    ]
+    session.add_all(copies)
+    await session.commit()
 
     response = client.get(
         '/books/?title=Test book 1',
@@ -196,7 +226,7 @@ async def test_list_books_filter_description_should_return_5_books(
     session.add_all(books + other_books)
     await session.commit()
 
-    for book in books:
+    for book in books + other_books:
         await session.refresh(book)
 
     expected_json = [
@@ -205,6 +235,16 @@ async def test_list_books_filter_description_should_return_5_books(
         )
         for t in books
     ]
+
+    all_books = books + other_books
+    copies = [
+        BookCopyFactory(
+            book_id=b.id, user_id=user.id, school_id=user.school_id
+        )
+        for b in all_books
+    ]
+    session.add_all(copies)
+    await session.commit()
 
     response = client.get(
         '/books/?description=desc',
@@ -231,7 +271,7 @@ async def test_list_books_filter_state_should_return_5_books(
     session.add_all(books + other_books)
     await session.commit()
 
-    for book in books:
+    for book in books + other_books:
         await session.refresh(book)
 
     expected_json = [
@@ -240,6 +280,16 @@ async def test_list_books_filter_state_should_return_5_books(
         )
         for t in books
     ]
+
+    all_books = books + other_books
+    copies = [
+        BookCopyFactory(
+            book_id=b.id, user_id=user.id, school_id=user.school_id
+        )
+        for b in all_books
+    ]
+    session.add_all(copies)
+    await session.commit()
 
     response = client.get(
         '/books/?state=available',
@@ -251,9 +301,10 @@ async def test_list_books_filter_state_should_return_5_books(
     assert response.json()['books'] == expected_json
 
 
-def test_delete_book_error(client, token):
+def test_delete_book_error(client, super_admin_token):
     response = client.delete(
-        '/books/10', headers={'Authorization': f'Bearer {token}'}
+        '/books/10',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
     )
 
     assert response.status_code == HTTPStatus.NOT_FOUND
@@ -261,15 +312,15 @@ def test_delete_book_error(client, token):
 
 
 @pytest.mark.asyncio
-async def test_delete_book(session, client, user, token):
-    book = BookFactory(user_id=user.id)
+async def test_delete_book(session, client, super_admin, super_admin_token):
+    book = BookFactory(user_id=super_admin.id)
     session.add(book)
     await session.commit()
     await session.refresh(book)
 
     response = client.delete(
         f'/books/{book.id}',
-        headers={'Authorization': f'Bearer {token}'},
+        headers={'Authorization': f'Bearer {super_admin_token}'},
     )
 
     assert response.status_code == HTTPStatus.OK
@@ -292,13 +343,14 @@ async def test_delete_book_from_other_user(
         headers={'Authorization': f'Bearer {token}'},
     )
 
-    assert response.status_code == HTTPStatus.NOT_FOUND
-    assert response.json() == {'detail': 'Book not found.'}
+    # RBAC: only SUPER_ADMIN can delete, librarian gets 403
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert response.json() == {'detail': 'Not enough permissions'}
 
 
 @pytest.mark.asyncio
-async def test_patch_book(session, client, user, token):
-    book = BookFactory(user_id=user.id)
+async def test_patch_book(session, client, super_admin, super_admin_token):
+    book = BookFactory(user_id=super_admin.id)
 
     session.add(book)
     await session.commit()
@@ -307,17 +359,17 @@ async def test_patch_book(session, client, user, token):
     response = client.patch(
         f'/books/{book.id}',
         json={'title': 'teste!'},
-        headers={'Authorization': f'Bearer {token}'},
+        headers={'Authorization': f'Bearer {super_admin_token}'},
     )
     assert response.status_code == HTTPStatus.OK
     assert response.json()['title'] == 'teste!'
 
 
-def test_patch_book_error(client, token):
+def test_patch_book_error(client, super_admin_token):
     response = client.patch(
         '/books/10',
         json={},
-        headers={'Authorization': f'Bearer {token}'},
+        headers={'Authorization': f'Bearer {super_admin_token}'},
     )
     assert response.status_code == HTTPStatus.NOT_FOUND
     assert response.json() == {'detail': 'Book not found.'}

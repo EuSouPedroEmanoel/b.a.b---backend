@@ -1,4 +1,15 @@
 import os
+
+# Garante que Settings() funciona mesmo sem .env (CI) para chaves não sensíveis
+# SUPER_ADMIN fica com defaults em scr/settings.py:14-16
+# e mock via fixture mock_super_admin_settings
+# DEVE vir antes de importar scr.* que instanciam Settings()
+os.environ.setdefault('DATABASE_URL', 'postgresql+psycopg://test:test@localhost:5432/test')
+os.environ.setdefault('GOOGLE_BOOKS_API_KEY', 'test-key')
+os.environ.setdefault('SECRET_KEY', 'test-secret-key-for-tests-1234567890')
+os.environ.setdefault('ALGORITHM', 'HS256')
+os.environ.setdefault('ACCESS_TOKEN_EXPIRE_MINUTES', '30')
+
 from contextlib import contextmanager
 from datetime import datetime
 from unittest.mock import patch
@@ -17,15 +28,6 @@ from scr.models import School, User, UserRole, table_registry
 from scr.security import get_password_hash
 from scr.settings import Settings
 from tests.factories import BookFactory, SchoolFactory
-
-# Garante que Settings() funciona mesmo sem .env (CI) para chaves não sensíveis
-# SUPER_ADMIN fica com defaults em scr/settings.py:14-16
-# e mock via fixture mock_super_admin_settings
-os.environ.setdefault('DATABASE_URL', 'postgresql+psycopg://test:test@localhost:5432/test')
-os.environ.setdefault('GOOGLE_BOOKS_API_KEY', 'test-key')
-os.environ.setdefault('SECRET_KEY', 'test-secret-key-for-tests-1234567890')
-os.environ.setdefault('ALGORITHM', 'HS256')
-os.environ.setdefault('ACCESS_TOKEN_EXPIRE_MINUTES', '30')
 
 
 @pytest.fixture
