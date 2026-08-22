@@ -2,7 +2,7 @@ from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,44 +33,28 @@ async def create_book(
     session: Session,
     user: CurrentUser,
 ):
-    identifiers = []
     if book.isbn:
-        identifiers.append(Book.isbn == book.isbn)
-    if book.internal_code:
-        identifiers.append(Book.internal_code == book.internal_code)
-
-    if identifiers:
-        sttm = select(Book).where(or_(*identifiers))
-        if await session.scalar(sttm):
+        existing = await session.scalar(
+            select(Book).where(Book.isbn == book.isbn)
+        )
+        if existing:
             raise HTTPException(
                 status_code=HTTPStatus.CONFLICT,
                 detail='This Book already exists',
             )
 
-    title = book.title
+    # Google Books enrichment only for optional description
     description = book.description
-
-    if book.isbn and not title:
+    if book.isbn and not description:
         google_data = await get_google_book_info(book.isbn)
-        title = title or google_data.get('title')
         description = description or google_data.get('description')
 
-    if not title:
-        raise HTTPException(
-            status_code=HTTPStatus.BAD_REQUEST,
-            detail=(
-                'O título não foi fornecido e não foi encontrado '
-                'no Google Books.'
-            ),
-        )
-
     db_book = Book(
-        title=title,
+        title=book.title,
         description=description,
         state=book.state,
         user_id=user.id,
         isbn=book.isbn,
-        internal_code=book.internal_code,
     )
 
     session.add(db_book)
@@ -118,6 +102,19 @@ async def create_book_copy(
         raise HTTPException(
             status_code=HTTPStatus.FORBIDDEN,
             detail='SUPER_ADMIN cannot create copies',
+        )
+
+    # Code uniqueness is scoped per school
+    existing_copy = await session.scalar(
+        select(BookCopy).where(
+            BookCopy.school_id == user.school_id,
+            BookCopy.code == copy.code,
+        )
+    )
+    if existing_copy:
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT,
+            detail='This Copy already exists',
         )
 
     db_copy = BookCopy(

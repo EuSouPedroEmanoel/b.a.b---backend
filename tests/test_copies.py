@@ -2,8 +2,9 @@ from http import HTTPStatus
 
 import pytest
 
-from scr.models import BookCondition, BooksStates
+from scr.models import BookCondition, BooksStates, User, UserRole
 from scr.schemas import BookCopyPublic
+from scr.security import get_password_hash
 from tests.factories import BookCopyFactory, BookFactory
 
 
@@ -15,7 +16,7 @@ def test_create_book_copy(client, token, book, user):
         f'/books/{book_id}/copies/',
         headers={'Authorization': f'Bearer {token}'},
         json={
-            'internal_code': 'EX-0001',
+            'code': 'EX-0001',
             'state': 'available',
             'condition': 'new',
         },
@@ -26,7 +27,7 @@ def test_create_book_copy(client, token, book, user):
     assert data['book_id'] == book_id
     assert data['user_id'] == user_id
     assert data['school_id'] == user.school_id
-    assert data['internal_code'] == 'EX-0001'
+    assert data['code'] == 'EX-0001'
     assert data['state'] == 'available'
     assert data['condition'] == 'new'
 
@@ -35,7 +36,7 @@ def test_create_book_copy_book_not_found(client, token):
     response = client.post(
         '/books/10/copies/',
         headers={'Authorization': f'Bearer {token}'},
-        json={'internal_code': 'EX-0002'},
+        json={'code': 'EX-0002'},
     )
 
     assert response.status_code == HTTPStatus.NOT_FOUND
@@ -43,18 +44,18 @@ def test_create_book_copy_book_not_found(client, token):
 
 
 @pytest.mark.asyncio
-async def test_create_book_copy_duplicate_internal_code(
+async def test_create_book_copy_duplicate_code(
     session, client, user, token, book
 ):
     book_id = book.id
     copy_code = BookCopyFactory.build(
         book_id=book_id, user_id=user.id, school_id=user.school_id
-    ).internal_code
+    ).code
     copy = BookCopyFactory(
         book_id=book_id,
         user_id=user.id,
         school_id=user.school_id,
-        internal_code=copy_code,
+        code=copy_code,
     )
     session.add(copy)
     await session.commit()
@@ -62,7 +63,7 @@ async def test_create_book_copy_duplicate_internal_code(
     response = client.post(
         f'/books/{book_id}/copies/',
         headers={'Authorization': f'Bearer {token}'},
-        json={'internal_code': copy_code},
+        json={'code': copy_code},
     )
 
     assert response.status_code == HTTPStatus.CONFLICT
@@ -81,7 +82,7 @@ async def test_create_book_copy_from_other_user_book(
     response = client.post(
         f'/books/{book_other_user.id}/copies/',
         headers={'Authorization': f'Bearer {token}'},
-        json={'internal_code': 'EX-0003'},
+        json={'code': 'EX-0003'},
     )
 
     # RBAC: qualquer usuário de escola pode criar cópia
@@ -258,7 +259,7 @@ async def test_get_copy_by_id(session, client, user, token, book):
     )
 
     assert response.status_code == HTTPStatus.OK
-    assert response.json()['internal_code'] == copy.internal_code
+    assert response.json()['code'] == copy.code
 
 
 def test_get_copy_error(client, token):
@@ -358,3 +359,67 @@ async def test_delete_book_cascades_copies(
         headers={'Authorization': f'Bearer {super_admin_token}'},
     )
     assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_same_code_different_schools_allowed(
+    session, client, user, book, other_school
+):
+    # same code "CODEX" in two different schools should succeed
+    common_code = 'CODEX-001'
+
+    token = client.post(
+        '/auth/token',
+        data={
+            'username': user.username,
+            'password': user.clean_password,
+        },
+    ).json()['access_token']
+
+    # copy for user's school
+    resp1 = client.post(
+        f'/books/{book.id}/copies/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'code': common_code},
+    )
+    assert resp1.status_code == HTTPStatus.CREATED
+    assert resp1.json()['code'] == common_code
+    assert resp1.json()['school_id'] == user.school_id
+
+    # create user in other_school
+    other_user_pw = 'testteste'
+    other_user2 = User(
+        username='other_school_user_tmp',
+        email='other_school_tmp@exemplo.com',
+        password=get_password_hash(other_user_pw),
+        role=UserRole.LIBRARIAN,
+        school_id=other_school.id,
+    )
+    session.add(other_user2)
+    await session.commit()
+    await session.refresh(other_user2)
+
+    other_token = client.post(
+        '/auth/token',
+        data={
+            'username': other_user2.username,
+            'password': other_user_pw,
+        },
+    ).json()['access_token']
+
+    resp2 = client.post(
+        f'/books/{book.id}/copies/',
+        headers={'Authorization': f'Bearer {other_token}'},
+        json={'code': common_code},
+    )
+    assert resp2.status_code == HTTPStatus.CREATED
+    assert resp2.json()['code'] == common_code
+    assert resp2.json()['school_id'] == other_school.id
+
+    # same school duplicate should fail 409
+    resp3 = client.post(
+        f'/books/{book.id}/copies/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'code': common_code},
+    )
+    assert resp3.status_code == HTTPStatus.CONFLICT

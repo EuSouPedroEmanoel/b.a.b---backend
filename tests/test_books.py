@@ -16,7 +16,6 @@ def test_create_book(client, token):
             'description': 'Test book description',
             'state': 'available',
             'isbn': '978-3-16-148410-0',
-            'internal_code': None,
         },
     )
     assert response.json() == {
@@ -25,30 +24,21 @@ def test_create_book(client, token):
         'description': 'Test book description',
         'state': 'available',
         'isbn': '978-3-16-148410-0',
-        'internal_code': None,
     }
 
 
-def test_create_book_error_missing_title(client, token, monkeypatch):
-    async def fake_get_google_book_info(isbn):
-        return {}
-
-    monkeypatch.setattr(
-        'scr.routers.books.get_google_book_info', fake_get_google_book_info
-    )
-
+def test_create_book_error_missing_title(client, token):
     response = client.post(
         '/books/',
         headers={'Authorization': f'Bearer {token}'},
         json={
-            'title': None,
             'description': None,
             'state': 'available',
             'isbn': '978-3-16-148410-0',
         },
     )
 
-    assert response.status_code == HTTPStatus.BAD_REQUEST
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 def test_create_book_without_description_should_return_none(client, token):
@@ -59,7 +49,7 @@ def test_create_book_without_description_should_return_none(client, token):
             'title': 'Livro sem descrição',
             'description': None,
             'state': 'available',
-            'internal_code': 'INT-0001',
+            'isbn': '978-1-23-456789-0',
         },
     )
 
@@ -68,10 +58,10 @@ def test_create_book_without_description_should_return_none(client, token):
     assert 'Sem descrição' not in (response.json()['description'] or '')
 
 
-def test_create_book_duplicate_internal_code(client, token):
+def test_create_book_duplicate_isbn(client, token):
     book_data = {
         'title': 'Livro duplicado',
-        'internal_code': 'INT-DUP-1',
+        'isbn': '978-0-00-000001-1',
     }
 
     first = client.post(

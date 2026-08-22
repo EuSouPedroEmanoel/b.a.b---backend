@@ -109,7 +109,7 @@ class FilterCopy(FilterPage):
 # endregion
 # region - Copies
 class BookCopySchema(BaseModel):
-    internal_code: str
+    code: str
     state: BooksStates = BooksStates.AVAILABLE
     condition: BookCondition = BookCondition.GOOD
     acquisition_date: date | None = None
@@ -130,6 +130,7 @@ class BookCopyList(BaseModel):
 
 
 class BookCopyUpdate(BaseModel):
+    code: str | None = None
     state: BooksStates | None = None
     condition: BookCondition | None = None
     acquisition_date: date | None = None
@@ -139,22 +140,15 @@ class BookCopyUpdate(BaseModel):
 # endregion
 # region - Books
 class BooksSchema(BaseModel):
-    title: str | None = None
+    title: str
     description: str | None = None
     state: BooksStates | None = BooksStates.AVAILABLE
     isbn: str | None = None
-    internal_code: str | None = None
 
     @model_validator(mode='after')
     def validate_identifiers(self):
-        if not self.isbn and not self.internal_code:
-            raise ValueError(
-                "É necessário informar o 'isbn' ou o 'internal_code'."
-            )
-        if not self.isbn and not self.title:
-            raise ValueError(
-                "O 'title' é obrigatório quando o livro não possui 'isbn'."
-            )
+        if not self.title:
+            raise ValueError("O 'title' é obrigatório.")
         return self
 
 

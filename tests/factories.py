@@ -33,7 +33,7 @@ class BookCopyFactory(factory.Factory):
     class Meta:
         model = BookCopy
 
-    internal_code = factory.Sequence(lambda n: f'EX-{n}')
+    code = factory.Sequence(lambda n: f'EX-{n}')
     state = BooksStates.AVAILABLE
     condition = BookCondition.GOOD
     book_id = 1

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from enum import Enum
 
-from sqlalchemy import CheckConstraint, ForeignKey, func
+from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint, func
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import (
     Mapped,
@@ -116,12 +116,6 @@ class User:
 @table_registry.mapped_as_dataclass()
 class Book:
     __tablename__ = 'books'
-    __table_args__ = (
-        CheckConstraint(
-            '(isbn IS NOT NULL) OR (internal_code IS NOT NULL)',
-            name='check_isbn_or_internal_code_present',
-        ),
-    )
 
     id: Mapped[int] = mapped_column(
         init=False, primary_key=True, autoincrement=True
@@ -137,9 +131,6 @@ class Book:
     user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
 
     isbn: Mapped[str | None] = mapped_column(
-        kw_only=True, default=None, unique=True
-    )
-    internal_code: Mapped[str | None] = mapped_column(
         kw_only=True, default=None, unique=True
     )
 
@@ -162,11 +153,16 @@ class Book:
 @table_registry.mapped_as_dataclass()
 class BookCopy:
     __tablename__ = 'book_copies'
+    __table_args__ = (
+        UniqueConstraint(
+            'school_id', 'code', name='uq_school_copy_code'
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         init=False, primary_key=True, autoincrement=True
     )
-    internal_code: Mapped[str] = mapped_column(unique=True, nullable=False)
+    code: Mapped[str] = mapped_column(nullable=False)
 
     state: Mapped[BooksStates] = mapped_column(
         SQLEnum(BooksStates, values_callable=lambda x: [e.value for e in x]),
