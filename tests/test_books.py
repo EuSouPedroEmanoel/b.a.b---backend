@@ -49,7 +49,6 @@ def test_create_book_without_description_should_return_none(client, token):
             'title': 'Livro sem descrição',
             'description': None,
             'state': 'available',
-            'isbn': '978-1-23-456789-0',
         },
     )
 
