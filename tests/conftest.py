@@ -14,6 +14,7 @@ from scr.database import get_session
 from scr.models import User, table_registry
 from scr.security import get_password_hash
 from scr.settings import Settings
+from tests.factories import BookFactory
 
 
 @pytest.fixture
@@ -110,6 +111,19 @@ def token(client, user):
 @pytest.fixture
 def settings():
     return Settings()
+
+
+@pytest_asyncio.fixture
+async def book(session: AsyncSession, user):
+    book = BookFactory(user_id=user.id)
+
+    session.add(book)
+    await session.commit()
+    await session.refresh(book)
+
+    session.expunge(book)
+
+    return book
 
 
 class UserFactory(factory.Factory):

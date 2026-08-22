@@ -1,6 +1,8 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from datetime import date
 
-from scr.models import BooksStates
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+
+from scr.models import BookCondition, BooksStates
 
 
 class Message(BaseModel):
@@ -50,14 +52,60 @@ class FilterBook(FilterPage):
     state: BooksStates | None = None
 
 
+class FilterCopy(FilterPage):
+    state: BooksStates | None = None
+    condition: BookCondition | None = None
+
+
+# endregion
+# region - Copies
+class BookCopySchema(BaseModel):
+    internal_code: str
+    state: BooksStates = BooksStates.AVAILABLE
+    condition: BookCondition = BookCondition.GOOD
+    acquisition_date: date | None = None
+    notes: str | None = None
+
+
+class BookCopyPublic(BookCopySchema):
+    id: int
+    book_id: int
+    user_id: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BookCopyList(BaseModel):
+    copies: list[BookCopyPublic]
+
+
+class BookCopyUpdate(BaseModel):
+    state: BooksStates | None = None
+    condition: BookCondition | None = None
+    acquisition_date: date | None = None
+    notes: str | None = None
+
+
 # endregion
 # region - Books
 class BooksSchema(BaseModel):
-    title: str
-    description: str
-    state: BooksStates
+    title: str | None = None
+    description: str | None = None
+    state: BooksStates | None = BooksStates.AVAILABLE
     isbn: str | None = None
     internal_code: str | None = None
+
+    @model_validator(mode='after')
+    def validate_identifiers(self):
+        if not self.isbn and not self.internal_code:
+            raise ValueError(
+                "É necessário informar o 'isbn' ou o 'internal_code'."
+            )
+        if not self.isbn and not self.title:
+            raise ValueError(
+                "O 'title' é obrigatório quando o livro não possui 'isbn'."
+            )
+        return self
 
 
 class BooksPublic(BooksSchema):

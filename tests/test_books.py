@@ -29,6 +29,67 @@ def test_create_book(client, token):
     }
 
 
+def test_create_book_error_missing_title(client, token, monkeypatch):
+    async def fake_get_google_book_info(isbn):
+        return {}
+
+    monkeypatch.setattr(
+        'scr.routers.books.get_google_book_info', fake_get_google_book_info
+    )
+
+    response = client.post(
+        '/books/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={
+            'title': None,
+            'description': None,
+            'state': 'available',
+            'isbn': '978-3-16-148410-0',
+        },
+    )
+
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+
+
+def test_create_book_without_description_should_return_none(client, token):
+    response = client.post(
+        '/books/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={
+            'title': 'Livro sem descrição',
+            'description': None,
+            'state': 'available',
+            'internal_code': 'INT-0001',
+        },
+    )
+
+    assert response.status_code == HTTPStatus.CREATED
+    assert response.json()['description'] is None
+    assert 'Sem descrição' not in (response.json()['description'] or '')
+
+
+def test_create_book_duplicate_internal_code(client, token):
+    book_data = {
+        'title': 'Livro duplicado',
+        'internal_code': 'INT-DUP-1',
+    }
+
+    first = client.post(
+        '/books/',
+        headers={'Authorization': f'Bearer {token}'},
+        json=book_data,
+    )
+    assert first.status_code == HTTPStatus.CREATED
+
+    second = client.post(
+        '/books/',
+        headers={'Authorization': f'Bearer {token}'},
+        json=book_data,
+    )
+    assert second.status_code == HTTPStatus.CONFLICT
+    assert second.json() == {'detail': 'This Book already exists'}
+
+
 @pytest.mark.asyncio
 async def test_list_books_should_return_5_books(session, client, user, token):
     expected_books = 5
