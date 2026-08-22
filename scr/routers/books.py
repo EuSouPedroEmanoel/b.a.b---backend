@@ -2,12 +2,12 @@ from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from scr.database import get_session
-from scr.models import Book, BookCopy, User
+from scr.models import Book, BookCopy, User, UserRole
 from scr.schemas import (
     BookCopyPublic,
     BookCopySchema,
@@ -99,16 +99,33 @@ async def create_book_copy(
     session: Session,
     user: CurrentUser,
 ):
-    book = await session.scalar(
-        select(Book).where(Book.user_id == user.id, Book.id == book_id)
-    )
+    # School-scoped users must have a school
+    if user.role != UserRole.SUPER_ADMIN and user.school_id is None:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='User without school cannot create copies',
+        )
+
+    book = await session.scalar(select(Book).where(Book.id == book_id))
 
     if not book:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
         )
 
-    db_copy = BookCopy(**copy.model_dump(), book_id=book.id, user_id=user.id)
+    # Copies belong to the creator's school
+    if user.role == UserRole.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='SUPER_ADMIN cannot create copies',
+        )
+
+    db_copy = BookCopy(
+        **copy.model_dump(),
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+    )
     session.add(db_copy)
 
     try:
@@ -130,7 +147,21 @@ async def list_books(
     user: CurrentUser,
     book_filter: Annotated[FilterBook, Depends()],
 ):
-    sttm = select(Book).where(Book.user_id == user.id)
+    sttm = select(Book)
+
+    # Tenant isolation: school users only see books with copies in their school
+    if user.role != UserRole.SUPER_ADMIN:
+        if user.school_id is None:
+            raise HTTPException(
+                status_code=HTTPStatus.FORBIDDEN,
+                detail='User without school cannot list books',
+            )
+        sttm = sttm.where(
+            exists().where(
+                (BookCopy.book_id == Book.id)
+                & (BookCopy.school_id == user.school_id)
+            )
+        )
 
     if book_filter.title:
         sttm = sttm.where(Book.title.contains(book_filter.title))
@@ -147,10 +178,18 @@ async def list_books(
 
 
 @router.delete('/{book_id}', response_model=Message)
-async def delete_book(book_id: int, session: Session, user: CurrentUser):
-    book = await session.scalar(
-        select(Book).where(Book.user_id == user.id, Book.id == book_id)
-    )
+async def delete_book(
+    book_id: int,
+    session: Session,
+    user: CurrentUser,
+):
+    # Only SUPER_ADMIN can delete global catalog entries
+    if user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='Not enough permissions',
+        )
+    book = await session.scalar(select(Book).where(Book.id == book_id))
 
     if not book:
         raise HTTPException(
@@ -167,9 +206,12 @@ async def delete_book(book_id: int, session: Session, user: CurrentUser):
 async def patch_book(
     book_id: int, session: Session, user: CurrentUser, book: BookUpdate
 ):
-    db_book = await session.scalar(
-        select(Book).where(Book.user_id == user.id, Book.id == book_id)
-    )
+    if user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='Not enough permissions',
+        )
+    db_book = await session.scalar(select(Book).where(Book.id == book_id))
 
     if not db_book:
         raise HTTPException(

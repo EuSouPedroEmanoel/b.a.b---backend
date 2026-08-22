@@ -1,6 +1,21 @@
 import factory.fuzzy
 
-from scr.models import Book, BookCondition, BookCopy, BooksStates
+from scr.models import (
+    Book,
+    BookCondition,
+    BookCopy,
+    BooksStates,
+    School,
+)
+
+
+class SchoolFactory(factory.Factory):
+    class Meta:
+        model = School
+
+    name = factory.Faker('company')
+    code = factory.Sequence(lambda n: f'SCH-{n}')
+    is_active = True
 
 
 class BookFactory(factory.Factory):
@@ -23,3 +38,4 @@ class BookCopyFactory(factory.Factory):
     condition = BookCondition.GOOD
     book_id = 1
     user_id = 1
+    school_id = 1

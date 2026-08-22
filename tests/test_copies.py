@@ -53,8 +53,9 @@ async def test_create_book_copy_duplicate_internal_code(
     copy_code = BookCopyFactory.build(
         book_id=book_id, user_id=user.id
     ).internal_code
-    copy = BookCopyFactory(book_id=book_id, user_id=user.id,
-                           internal_code=copy_code)
+    copy = BookCopyFactory(
+        book_id=book_id, user_id=user.id, internal_code=copy_code
+    )
     session.add(copy)
     await session.commit()
 

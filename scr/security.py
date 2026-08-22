@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from scr.database import get_session
-from scr.models import User
+from scr.models import User, UserRole
 from scr.settings import Settings
 
 pwd_context = PasswordHash.recommended()
@@ -69,4 +69,39 @@ async def get_current_user(
     if not user:
         raise credential_exception
 
+    return user
+
+
+class RoleChecker:
+    def __init__(self, allowed_roles: list[UserRole]):
+        self.allowed_roles = allowed_roles
+
+    async def __call__(self, user: User = Depends(get_current_user)) -> User:
+        if user.role not in self.allowed_roles:
+            raise HTTPException(
+                status_code=HTTPStatus.FORBIDDEN,
+                detail='Not enough permissions',
+            )
+        return user
+
+
+async def get_current_active_super_admin(
+    user: User = Depends(get_current_user),
+) -> User:
+    if user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='Not enough permissions',
+        )
+    return user
+
+
+async def get_current_school_admin(
+    user: User = Depends(get_current_user),
+) -> User:
+    if user.role not in {UserRole.SUPER_ADMIN, UserRole.SCHOOL_ADMIN}:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='Not enough permissions',
+        )
     return user
