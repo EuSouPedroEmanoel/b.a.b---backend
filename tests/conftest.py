@@ -1,5 +1,7 @@
+import os
 from contextlib import contextmanager
 from datetime import datetime
+from unittest.mock import patch
 
 import factory
 import pytest
@@ -15,6 +17,14 @@ from scr.models import School, User, UserRole, table_registry
 from scr.security import get_password_hash
 from scr.settings import Settings
 from tests.factories import BookFactory, SchoolFactory
+
+# Garante que Settings() funciona mesmo sem .env (CI) para chaves não sensíveis
+# SUPER_ADMIN fica com defaults em scr/settings.py:14-16 e mock via fixture mock_super_admin_settings
+os.environ.setdefault('DATABASE_URL', 'postgresql+psycopg://test:test@localhost:5432/test')
+os.environ.setdefault('GOOGLE_BOOKS_API_KEY', 'test-key')
+os.environ.setdefault('SECRET_KEY', 'test-secret-key-for-tests-1234567890')
+os.environ.setdefault('ALGORITHM', 'HS256')
+os.environ.setdefault('ACCESS_TOKEN_EXPIRE_MINUTES', '30')
 
 
 @pytest.fixture
@@ -195,6 +205,20 @@ def super_admin_token(client, super_admin):
 @pytest.fixture
 def settings():
     return Settings()
+
+
+@pytest.fixture
+def mock_super_admin_settings(monkeypatch):
+    """Mock das credenciais SUPER_ADMIN para testes isolados."""
+    monkeypatch.setenv('SUPER_ADMIN_USERNAME', 'mock_super')
+    monkeypatch.setenv('SUPER_ADMIN_EMAIL', 'mock@exemplo.com')
+    monkeypatch.setenv('SUPER_ADMIN_PASSWORD', 'mock123')
+    # patch no objeto já instanciado em scr.seeds / scr.security se necessário
+    with patch('scr.settings.Settings') as MockSettings:
+        MockSettings.return_value.SUPER_ADMIN_USERNAME = 'mock_super'
+        MockSettings.return_value.SUPER_ADMIN_EMAIL = 'mock@exemplo.com'
+        MockSettings.return_value.SUPER_ADMIN_PASSWORD = 'mock123'
+        yield MockSettings
 
 
 @pytest_asyncio.fixture
