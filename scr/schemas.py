@@ -2,7 +2,7 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
-from scr.models import BookCondition, BooksStates
+from scr.models import BookCondition, BooksStates, UserRole
 
 
 class Message(BaseModel):
@@ -20,6 +20,8 @@ class UserPublic(BaseModel):
     username: str
     email: EmailStr
     id: int
+    role: UserRole
+    school_id: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -30,6 +32,52 @@ class UserDB(UserSchema):
 
 class UserList(BaseModel):
     users: list[UserPublic]
+
+
+class StaffCreateSchema(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    role: UserRole = UserRole.LIBRARIAN
+    school_id: int | None = None  # only honored for SUPER_ADMIN
+
+    @model_validator(mode='after')
+    def validate_staff_role(self):
+        allowed = {
+            UserRole.LIBRARIAN,
+            UserRole.TEACHER,
+            UserRole.STUDENT,
+        }
+        # SCHOOL_ADMIN/SUPER_ADMIN creation via schools/{id}/admins
+        if self.role not in allowed:
+            raise ValueError(
+                f'Role deve ser um de: {", ".join(r.value for r in allowed)}'
+            )
+        return self
+
+
+class SchoolAdminCreateSchema(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+
+
+# endregion
+# region - School
+class SchoolSchema(BaseModel):
+    name: str = Field(min_length=2)
+    code: str = Field(min_length=2)
+
+
+class SchoolPublic(SchoolSchema):
+    id: int
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SchoolList(BaseModel):
+    schools: list[SchoolPublic]
 
 
 # endregion
@@ -55,6 +103,7 @@ class FilterBook(FilterPage):
 class FilterCopy(FilterPage):
     state: BooksStates | None = None
     condition: BookCondition | None = None
+    school_id: int | None = None  # SUPER_ADMIN can filter by school
 
 
 # endregion
@@ -71,6 +120,7 @@ class BookCopyPublic(BookCopySchema):
     id: int
     book_id: int
     user_id: int
+    school_id: int
 
     model_config = ConfigDict(from_attributes=True)
 

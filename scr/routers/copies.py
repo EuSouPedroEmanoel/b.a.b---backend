@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from scr.database import get_session
-from scr.models import BookCopy, User
+from scr.models import BookCopy, User, UserRole
 from scr.schemas import (
     BookCopyList,
     BookCopyPublic,
@@ -22,13 +22,29 @@ Session = Annotated[AsyncSession, Depends(get_session)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+def _resolve_school_filter(user: User, copy_filter: FilterCopy) -> int | None:
+    if user.role == UserRole.SUPER_ADMIN:
+        return copy_filter.school_id
+    # school-scoped roles: enforce own school
+    if user.school_id is None:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='User without school cannot access copies',
+        )
+    return user.school_id
+
+
 @router.get('/', response_model=BookCopyList)
 async def list_copies(
     session: Session,
     user: CurrentUser,
     copy_filter: Annotated[FilterCopy, Depends()],
 ):
-    sttm = select(BookCopy).where(BookCopy.user_id == user.id)
+    school_id = _resolve_school_filter(user, copy_filter)
+
+    sttm = select(BookCopy)
+    if school_id is not None:
+        sttm = sttm.where(BookCopy.school_id == school_id)
 
     if copy_filter.state:
         sttm = sttm.where(BookCopy.state == copy_filter.state)
@@ -44,11 +60,13 @@ async def list_copies(
 
 @router.get('/{copy_id}', response_model=BookCopyPublic)
 async def read_copy_by_id(copy_id: int, session: Session, user: CurrentUser):
-    copy_db = await session.scalar(
-        select(BookCopy).where(
-            BookCopy.user_id == user.id, BookCopy.id == copy_id
-        )
-    )
+    school_id = _resolve_school_filter(user, FilterCopy())
+
+    sttm = select(BookCopy).where(BookCopy.id == copy_id)
+    if school_id is not None:
+        sttm = sttm.where(BookCopy.school_id == school_id)
+
+    copy_db = await session.scalar(sttm)
 
     if not copy_db:
         raise HTTPException(
@@ -65,9 +83,20 @@ async def patch_copy(
     user: CurrentUser,
     copy: BookCopyUpdate,
 ):
+    if user.role == UserRole.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='SUPER_ADMIN cannot patch copies directly',
+        )
+    if user.school_id is None:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='User without school cannot patch copies',
+        )
+
     db_copy = await session.scalar(
         select(BookCopy).where(
-            BookCopy.user_id == user.id, BookCopy.id == copy_id
+            BookCopy.school_id == user.school_id, BookCopy.id == copy_id
         )
     )
 
@@ -88,9 +117,20 @@ async def patch_copy(
 
 @router.delete('/{copy_id}', response_model=Message)
 async def delete_copy(copy_id: int, session: Session, user: CurrentUser):
+    if user.role == UserRole.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='SUPER_ADMIN cannot delete copies directly',
+        )
+    if user.school_id is None:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='User without school cannot delete copies',
+        )
+
     copy_db = await session.scalar(
         select(BookCopy).where(
-            BookCopy.user_id == user.id, BookCopy.id == copy_id
+            BookCopy.school_id == user.school_id, BookCopy.id == copy_id
         )
     )
 

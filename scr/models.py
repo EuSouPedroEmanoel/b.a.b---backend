@@ -31,16 +31,24 @@ class BookCondition(str, Enum):
     BAD = 'bad'  # 5. Péssimo / Inutilizável (Faltando páginas, mofo, água)
 
 
+class UserRole(str, Enum):
+    SUPER_ADMIN = 'super_admin'
+    SCHOOL_ADMIN = 'school_admin'
+    LIBRARIAN = 'librarian'
+    TEACHER = 'teacher'
+    STUDENT = 'student'
+
+
 @table_registry.mapped_as_dataclass()
-class User:
-    __tablename__ = 'users'
+class School:
+    __tablename__ = 'schools'
 
     id: Mapped[int] = mapped_column(
         init=False, primary_key=True, autoincrement=True
     )
-    username: Mapped[str] = mapped_column(unique=True, nullable=False)
-    email: Mapped[str] = mapped_column(unique=True, nullable=True)
-    password: Mapped[str] = mapped_column(nullable=True)
+    name: Mapped[str] = mapped_column(nullable=False)
+    code: Mapped[str] = mapped_column(unique=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now()
     )
@@ -48,6 +56,49 @@ class User:
         init=False, server_default=func.now(), onupdate=func.now()
     )
 
+    users: Mapped[list[User]] = relationship(
+        init=False,
+        back_populates='school',
+        cascade='all, delete-orphan',
+        lazy='selectin',
+    )
+
+
+@table_registry.mapped_as_dataclass()
+class User:
+    __tablename__ = 'users'
+    __table_args__ = (
+        CheckConstraint(
+            "(role = 'super_admin') OR (school_id IS NOT NULL)",
+            name='ck_user_school_required',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    username: Mapped[str] = mapped_column(unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(unique=True, nullable=True)
+    password: Mapped[str] = mapped_column(nullable=True)
+    role: Mapped[UserRole] = mapped_column(
+        SQLEnum(UserRole, values_callable=lambda x: [e.value for e in x]),
+        kw_only=True,
+        default=UserRole.LIBRARIAN,
+        nullable=False,
+    )
+    school_id: Mapped[int | None] = mapped_column(
+        ForeignKey('schools.id'), kw_only=True, default=None, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    school: Mapped[School | None] = relationship(
+        init=False, back_populates='users', lazy='selectin'
+    )
     books: Mapped[list[Book]] = relationship(
         init=False,
         back_populates='user',
@@ -130,6 +181,7 @@ class BookCopy:
 
     book_id: Mapped[int] = mapped_column(ForeignKey('books.id'))
     user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    school_id: Mapped[int] = mapped_column(ForeignKey('schools.id'))
 
     acquisition_date: Mapped[date | None] = mapped_column(
         kw_only=True, default=None
@@ -145,3 +197,4 @@ class BookCopy:
 
     book: Mapped[Book] = relationship(init=False, back_populates='copies')
     user: Mapped[User] = relationship(init=False, back_populates='copies')
+    school: Mapped[School] = relationship(init=False, lazy='selectin')

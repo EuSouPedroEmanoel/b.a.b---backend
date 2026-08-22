@@ -11,10 +11,10 @@ from testcontainers.postgres import PostgresContainer
 
 from scr.app import app
 from scr.database import get_session
-from scr.models import User, table_registry
+from scr.models import School, User, UserRole, table_registry
 from scr.security import get_password_hash
 from scr.settings import Settings
-from tests.factories import BookFactory
+from tests.factories import BookFactory, SchoolFactory
 
 
 @pytest.fixture
@@ -69,9 +69,33 @@ def mock_db_time():
 
 
 @pytest_asyncio.fixture
-async def user(session: AsyncSession):
+async def school(session: AsyncSession):
+    sch = SchoolFactory()
+    session.add(sch)
+    await session.commit()
+    await session.refresh(sch)
+    session.expunge(sch)
+    return sch
+
+
+@pytest_asyncio.fixture
+async def other_school(session: AsyncSession):
+    sch = SchoolFactory()
+    session.add(sch)
+    await session.commit()
+    await session.refresh(sch)
+    session.expunge(sch)
+    return sch
+
+
+@pytest_asyncio.fixture
+async def user(session: AsyncSession, school: School):
     password = 'testteste'
-    user = UserFactory(password=get_password_hash(password))
+    user = UserFactory(
+        password=get_password_hash(password),
+        role=UserRole.LIBRARIAN,
+        school_id=school.id,
+    )
 
     session.add(user)
     await session.commit()
@@ -79,14 +103,18 @@ async def user(session: AsyncSession):
 
     session.expunge(user)
 
-    user.clean_password = password
+    user.clean_password = password  # type: ignore[attr-defined]
     return user
 
 
 @pytest_asyncio.fixture
-async def other_user(session: AsyncSession):
+async def other_user(session: AsyncSession, school: School):
     password = 'testteste'
-    user = UserFactory(password=get_password_hash(password))
+    user = UserFactory(
+        password=get_password_hash(password),
+        role=UserRole.LIBRARIAN,
+        school_id=school.id,
+    )
 
     session.add(user)
     await session.commit()
@@ -94,7 +122,39 @@ async def other_user(session: AsyncSession):
 
     session.expunge(user)
 
-    user.clean_password = password
+    user.clean_password = password  # type: ignore[attr-defined]
+    return user
+
+
+@pytest_asyncio.fixture
+async def school_admin(session: AsyncSession, school: School):
+    password = 'testteste'
+    user = UserFactory(
+        password=get_password_hash(password),
+        role=UserRole.SCHOOL_ADMIN,
+        school_id=school.id,
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    session.expunge(user)
+    user.clean_password = password  # type: ignore[attr-defined]
+    return user
+
+
+@pytest_asyncio.fixture
+async def super_admin(session: AsyncSession):
+    password = 'testteste'
+    user = UserFactory(
+        password=get_password_hash(password),
+        role=UserRole.SUPER_ADMIN,
+        school_id=None,
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    session.expunge(user)
+    user.clean_password = password  # type: ignore[attr-defined]
     return user
 
 
@@ -105,6 +165,30 @@ def token(client, user):
         data={'username': user.username, 'password': user.clean_password},
     )
 
+    return response.json()['access_token']
+
+
+@pytest.fixture
+def school_admin_token(client, school_admin):
+    response = client.post(
+        '/auth/token',
+        data={
+            'username': school_admin.username,
+            'password': school_admin.clean_password,
+        },
+    )
+    return response.json()['access_token']
+
+
+@pytest.fixture
+def super_admin_token(client, super_admin):
+    response = client.post(
+        '/auth/token',
+        data={
+            'username': super_admin.username,
+            'password': super_admin.clean_password,
+        },
+    )
     return response.json()['access_token']
 
 
@@ -133,3 +217,5 @@ class UserFactory(factory.Factory):
     username = factory.Sequence(lambda n: f'test{n}')
     email = factory.LazyAttribute(lambda obj: f'{obj.username}@exemple.com')
     password = factory.LazyAttribute(lambda obj: f'{obj.username}@exemple.com')
+    role = UserRole.LIBRARIAN
+    school_id = None
