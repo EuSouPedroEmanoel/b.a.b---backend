@@ -19,7 +19,8 @@ from scr.settings import Settings
 from tests.factories import BookFactory, SchoolFactory
 
 # Garante que Settings() funciona mesmo sem .env (CI) para chaves não sensíveis
-# SUPER_ADMIN fica com defaults em scr/settings.py:14-16 e mock via fixture mock_super_admin_settings
+# SUPER_ADMIN fica com defaults em scr/settings.py:14-16
+# e mock via fixture mock_super_admin_settings
 os.environ.setdefault('DATABASE_URL', 'postgresql+psycopg://test:test@localhost:5432/test')
 os.environ.setdefault('GOOGLE_BOOKS_API_KEY', 'test-key')
 os.environ.setdefault('SECRET_KEY', 'test-secret-key-for-tests-1234567890')
