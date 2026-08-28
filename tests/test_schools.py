@@ -90,6 +90,7 @@ def test_create_school_admin_success(client, super_admin_token, school):
         json={
             'username': 'admin_test_school',
             'email': 'admin_test@escola.com',
+            'cpf': '11144477735',
             'password': 'secret123',
         },
     )
@@ -106,6 +107,7 @@ def test_create_school_admin_not_found(client, super_admin_token):
         json={
             'username': 'x',
             'email': 'x@ex.com',
+            'cpf': '11144477735',
             'password': 'secret123',
         },
     )
@@ -126,6 +128,7 @@ async def test_create_school_admin_inactive(
         json={
             'username': 'admin2',
             'email': 'admin2@ex.com',
+            'cpf': '12345678909',
             'password': 'secret123',
         },
     )
@@ -141,6 +144,7 @@ def test_create_school_admin_conflict(client, super_admin_token, school, user):
         json={
             'username': user.username,
             'email': 'newemail@ex.com',
+            'cpf': '98765432100',
             'password': 'secret123',
         },
     )

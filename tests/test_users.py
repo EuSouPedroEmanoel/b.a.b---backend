@@ -10,6 +10,7 @@ def test_create_user(client, school, super_admin_token):
         json={
             'username': 'alice',
             'email': 'alice@exemple.com',
+            'cpf': '11144477735',
             'password': 'S3cr3t!123',
             'role': 'librarian',
             'school_id': school.id,
@@ -29,6 +30,7 @@ def test_create_user_integraty(client, school, super_admin_token):
         json={
             'username': 'fausto',
             'email': 'fausto@exemple.lol',
+            'cpf': '52998224725',
             'password': 'secret',
             'role': 'librarian',
             'school_id': school.id,
@@ -41,6 +43,7 @@ def test_create_user_integraty(client, school, super_admin_token):
         json={
             'username': 'fausto',
             'email': 'bob@exemple.lol',
+            'cpf': '12345678909',
             'password': 'newsecret',
             'role': 'librarian',
             'school_id': school.id,
@@ -49,13 +52,13 @@ def test_create_user_integraty(client, school, super_admin_token):
 
     assert actual_update.status_code == HTTPStatus.CONFLICT
     assert actual_update.json() == {
-        'detail': 'Username or Email already exists!!'
+        'detail': 'Username, Email or CPF already exists!!'
     }
 
 
 def test_read_users(client, user, token):
 
-    user_schema = UserPublic.model_validate(user).model_dump()
+    user_schema = UserPublic.model_validate(user).model_dump(mode='json')
     response = client.get(
         '/users/', headers={'Authorization': f'Bearer {token}'}
     )
@@ -71,7 +74,9 @@ def test_read_user_by_id(client, user, token):
     )
 
     assert response.status_code == HTTPStatus.OK
-    assert response.json() == UserPublic.model_validate(user).model_dump()
+    assert response.json() == UserPublic.model_validate(user).model_dump(
+        mode='json'
+    )
 
 
 def test_raise_read_user_by_id(client, user, token):
@@ -113,6 +118,7 @@ def test_update_integrity_error(
         json={
             'username': 'fausto',
             'email': 'fausto@exemple.lol',
+            'cpf': '98765432100',
             'password': 'secret',
             'role': 'librarian',
             'school_id': school.id,
@@ -131,7 +137,7 @@ def test_update_integrity_error(
 
     assert actual_update.status_code == HTTPStatus.CONFLICT
     assert actual_update.json() == {
-        'detail': 'Username or Email already exists!!'
+        'detail': 'Username, Email or CPF already exists!!'
     }
 
 
@@ -178,6 +184,7 @@ def test_create_user_school_admin_ignores_school_id(
         json={
             'username': 'staff_by_admin',
             'email': 'staff_by_admin@ex.com',
+            'cpf': '11144477735',
             'password': 'secret123',
             'role': 'librarian',
             'school_id': other_school.id,
@@ -195,6 +202,7 @@ def test_create_user_super_admin_missing_school_id(client, super_admin_token):
         json={
             'username': 'no_school_user',
             'email': 'no_school@ex.com',
+            'cpf': '12345678909',
             'password': 'secret123',
             'role': 'librarian',
         },
@@ -210,6 +218,7 @@ def test_create_user_invalid_role(client, school, super_admin_token):
         json={
             'username': 'invalid_role_user',
             'email': 'invalid_role@ex.com',
+            'cpf': '52998224725',
             'password': 'secret123',
             'role': 'super_admin',
             'school_id': school.id,
@@ -452,7 +461,11 @@ def test_update_student_turma_and_birthdate(
     resp = client.put(
         f'/users/{student.id}',
         headers={'Authorization': f'Bearer {school_admin_token}'},
-        json={'turma_numero': 8, 'turma_letra': 'B', 'birthdate': '2014-03-20'},
+        json={
+            'turma_numero': 8,
+            'turma_letra': 'B',
+            'birthdate': '2014-03-20',
+        },
     )
     assert resp.status_code == HTTPStatus.OK
     assert resp.json()['turma_numero'] == 8

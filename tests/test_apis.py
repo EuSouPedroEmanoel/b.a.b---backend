@@ -58,7 +58,11 @@ async def test_get_google_book_info_google_success():
         'src.utils.apis._fetch_json', return_value=google_data
     ) as mock_fetch:
         result = await apis.get_google_book_info('123')
-        assert result == {'title': 'T1', 'description': 'D1'}
+        assert result == {
+            'title': 'T1',
+            'description': 'D1',
+            'cover_url': None,
+        }
         assert mock_fetch.call_count == 1
 
 
@@ -71,7 +75,11 @@ async def test_get_google_book_info_fallback_brasilapi():
 
     with patch('src.utils.apis._fetch_json', side_effect=fake_fetch):
         result = await apis.get_google_book_info('123')
-        assert result == {'title': 'BR Title', 'description': 'BR Desc'}
+        assert result == {
+            'title': 'BR Title',
+            'description': 'BR Desc',
+            'cover_url': None,
+        }
 
 
 @pytest.mark.asyncio
@@ -102,4 +110,8 @@ async def test_get_google_book_info_google_no_description():
     }
     with patch('src.utils.apis._fetch_json', return_value=google_data):
         result = await apis.get_google_book_info('123')
-        assert result == {'title': None, 'description': None}
+        assert result == {
+            'title': None,
+            'description': None,
+            'cover_url': None,
+        }

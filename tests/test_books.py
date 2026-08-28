@@ -8,7 +8,7 @@ from tests.factories import BookCopyFactory, BookFactory
 
 
 def _expected_books_json(books, derived_state='available'):
-    """Serialise books as the API does, forcing the derived state.
+    """Serialize books as the API does, forcing the derived state.
 
     The API derives state from the school's copies; in these tests every
     expected book has exactly one AVAILABLE copy, so derived_state='available'.
@@ -31,7 +31,6 @@ def test_create_book(client, token):
         json={
             'title': 'Test book',
             'description': 'Test book description',
-            'state': 'available',
             'isbn': '978-3-16-148410-0',
         },
     )
@@ -39,8 +38,8 @@ def test_create_book(client, token):
     assert data['id'] == 1
     assert data['title'] == 'Test book'
     assert data['description'] == 'Test book description'
-    assert data['state'] == 'available'
-    assert data['isbn'] == '978-3-16-148410-0'
+    assert data['derived_state'] == 'archived'
+    assert data['isbn'] == '9783161484100'
     assert data['is_active'] is True
     assert 'added_by' in data
     assert 'edited_by' in data
@@ -53,7 +52,6 @@ def test_create_book_error_missing_title(client, token):
         headers={'Authorization': f'Bearer {token}'},
         json={
             'description': None,
-            'state': 'available',
         },
     )
 
@@ -67,7 +65,6 @@ def test_create_book_without_description_should_return_none(client, token):
         json={
             'title': 'Livro sem descrição',
             'description': None,
-            'state': 'available',
         },
     )
 
@@ -304,7 +301,12 @@ async def test_list_books_filter_state_should_return_borrowed_books(
         await session.refresh(book)
 
     session.add_all(
-        [BookCopyFactory(book_id=b.id, user_id=user.id, school_id=user.school_id) for b in avail_books]
+        [
+            BookCopyFactory(
+                book_id=b.id, user_id=user.id, school_id=user.school_id
+            )
+            for b in avail_books
+        ]
         + [
             BookCopyFactory(
                 book_id=b.id,
@@ -624,10 +626,479 @@ def test_list_books_without_school_forbidden(client, book):
         app.dependency_overrides.clear()
 
 
-def test_patch_book_forbidden_for_librarian(client, token, book):
+def test_patch_book_forbidden_for_teacher(client, teacher_token, book):
     resp = client.patch(
         f'/books/{book.id}',
-        headers={'Authorization': f'Bearer {token}'},
+        headers={'Authorization': f'Bearer {teacher_token}'},
         json={'title': 'hacked'},
     )
     assert resp.status_code == HTTPStatus.FORBIDDEN
+
+
+# ---------------------------------------------------------------------------
+# coverage: /books/lookup
+# ---------------------------------------------------------------------------
+def test_lookup_book_short_isbn(client, token):
+    resp = client.get(
+        '/books/lookup?isbn=1234',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_lookup_book_existing(session, client, user, token):
+    book = BookFactory(user_id=user.id, isbn='978-3-16-148410-0')
+    session.add(book)
+    await session.commit()
+
+    resp = client.get(
+        '/books/lookup?isbn=978-3-16-148410-0',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    data = resp.json()
+    assert data['found'] is True
+    assert data['already_exists'] is True
+    assert data['existing_book_id'] == book.id
+    assert data['isbn'] == '9783161484100'
+
+
+@pytest.mark.asyncio
+async def test_lookup_book_normalized_fallback(session, client, user, token):
+    book = BookFactory(user_id=user.id, isbn='978-3-16-148410-0')
+    session.add(book)
+    await session.commit()
+
+    resp = client.get(
+        '/books/lookup?isbn=9783161484100',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()['already_exists'] is True
+
+
+@pytest.mark.asyncio
+async def test_lookup_book_via_google(session, client, user, token):
+    from unittest.mock import AsyncMock, patch
+
+    with patch(
+        'src.routers.books.get_google_book_info', new_callable=AsyncMock
+    ) as mock_google:
+        mock_google.return_value = {
+            'title': 'Novo Livro',
+            'description': 'Desc',
+            'cover_url': None,
+        }
+        resp = client.get(
+            '/books/lookup?isbn=9780000000011',
+            headers={'Authorization': f'Bearer {token}'},
+        )
+
+    assert resp.status_code == HTTPStatus.OK
+    data = resp.json()
+    assert data['found'] is True
+    assert data['already_exists'] is False
+    assert data['title'] == 'Novo Livro'
+
+
+@pytest.mark.asyncio
+async def test_lookup_book_not_found(session, client, user, token):
+    from unittest.mock import AsyncMock, patch
+
+    with patch(
+        'src.routers.books.get_google_book_info', new_callable=AsyncMock
+    ) as mock_google:
+        mock_google.return_value = {}
+        resp = client.get(
+            '/books/lookup?isbn=9780000000012',
+            headers={'Authorization': f'Bearer {token}'},
+        )
+
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()['found'] is False
+    assert resp.json()['title'] is None
+
+
+# ---------------------------------------------------------------------------
+# coverage: /books/resolve
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_resolve_book_by_isbn_direct(session, client, user, token):
+    book = BookFactory(user_id=user.id, isbn='9783161484100')
+    session.add(book)
+    await session.commit()
+
+    resp = client.get(
+        '/books/resolve?term=9783161484100',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json() == {'kind': 'isbn', 'book_id': book.id}
+
+
+@pytest.mark.asyncio
+async def test_resolve_book_by_isbn_normalized(session, client, user, token):
+    book = BookFactory(user_id=user.id, isbn='978-3-16-148410-0')
+    session.add(book)
+    await session.commit()
+
+    resp = client.get(
+        '/books/resolve?term=9783161484100',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json() == {'kind': 'isbn', 'book_id': book.id}
+
+
+@pytest.mark.asyncio
+async def test_resolve_book_isbn_not_found(session, client, user, token):
+    resp = client.get(
+        '/books/resolve?term=9780000000012',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json() == {'kind': 'none', 'book_id': None}
+
+
+@pytest.mark.asyncio
+async def test_resolve_book_internal_code(session, client, user, token):
+    book = BookFactory(user_id=user.id)
+    session.add(book)
+    await session.commit()
+    session.add(
+        BookCopyFactory(
+            book_id=book.id,
+            user_id=user.id,
+            school_id=user.school_id,
+            code='INT-1',
+        )
+    )
+    await session.commit()
+
+    resp = client.get(
+        '/books/resolve?term=INT-1',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json() == {'kind': 'internal_code', 'book_id': book.id}
+
+
+@pytest.mark.asyncio
+async def test_resolve_book_title(session, client, user, token):
+    resp = client.get(
+        '/books/resolve?term=algum-titulo',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json() == {'kind': 'title', 'book_id': None}
+
+
+def test_resolve_book_without_school_forbidden(client, book):
+    from src.app import app
+    from src.models import User, UserRole
+    from src.security import get_current_user
+
+    fake_user = User(
+        username='noschool3',
+        email='noschool3@ex.com',
+        password='h',
+        role=UserRole.LIBRARIAN,
+        school_id=None,
+        is_active=True,
+    )
+    fake_user.id = 9997
+
+    async def fake():
+        return fake_user
+
+    app.dependency_overrides[get_current_user] = fake
+    try:
+        resp = client.get(
+            '/books/resolve?term=titulo-x',
+            headers={'Authorization': 'Bearer fake'},
+        )
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# coverage: /books/suggest
+# ---------------------------------------------------------------------------
+def test_suggest_books_empty_q(client, token):
+    resp = client.get(
+        '/books/suggest?q=',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json() == {'items': []}
+
+
+@pytest.mark.asyncio
+async def test_suggest_books(session, client, user, token):
+    book = BookFactory(user_id=user.id, title='Dom Casmurro')
+    session.add(book)
+    await session.commit()
+    session.add(
+        BookCopyFactory(
+            book_id=book.id, user_id=user.id, school_id=user.school_id
+        )
+    )
+    await session.commit()
+
+    resp = client.get(
+        '/books/suggest?q=Casmurro',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert [i['id'] for i in resp.json()['items']] == [book.id]
+
+
+@pytest.mark.asyncio
+async def test_suggest_books_super_admin(
+    session, client, super_admin, super_admin_token
+):
+    book = BookFactory(user_id=super_admin.id, title='Postumas Book')
+    session.add(book)
+    await session.commit()
+
+    resp = client.get(
+        '/books/suggest?q=Postumas',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert [i['id'] for i in resp.json()['items']] == [book.id]
+
+
+def test_suggest_books_without_school_forbidden(client, book):
+    from src.app import app
+    from src.models import User, UserRole
+    from src.security import get_current_user
+
+    fake_user = User(
+        username='noschool4',
+        email='noschool4@ex.com',
+        password='h',
+        role=UserRole.LIBRARIAN,
+        school_id=None,
+        is_active=True,
+    )
+    fake_user.id = 9996
+
+    async def fake():
+        return fake_user
+
+    app.dependency_overrides[get_current_user] = fake
+    try:
+        resp = client.get(
+            '/books/suggest?q=Qualquer',
+            headers={'Authorization': 'Bearer fake'},
+        )
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# coverage: create_book edge cases
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_create_book_duplicate_normalized_isbn(
+    session, client, user, token
+):
+    book = BookFactory(user_id=user.id, isbn='978-0-00-000001-1')
+    session.add(book)
+    await session.commit()
+
+    resp = client.post(
+        '/books/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'isbn': '9780000000011', 'title': 'X'},
+    )
+    assert resp.status_code == HTTPStatus.CONFLICT
+    assert resp.json() == {'detail': 'This Book already exists'}
+
+
+def test_create_book_isbn_info_not_found(client, token):
+    from unittest.mock import AsyncMock, patch
+
+    with patch(
+        'src.routers.books.get_google_book_info', new_callable=AsyncMock
+    ) as mock_google:
+        mock_google.return_value = {}
+        resp = client.post(
+            '/books/',
+            headers={'Authorization': f'Bearer {token}'},
+            json={'isbn': '9780000000012'},
+        )
+
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert resp.json()['detail'] == 'Book information not found'
+
+
+# ---------------------------------------------------------------------------
+# coverage: list_books filters (q, isbn, internal_code)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_list_books_filter_q_internal_code(session, client, user, token):
+    book = BookFactory(user_id=user.id)
+    session.add(book)
+    await session.commit()
+    session.add(
+        BookCopyFactory(
+            book_id=book.id,
+            user_id=user.id,
+            school_id=user.school_id,
+            code='EX-C1',
+        )
+    )
+    await session.commit()
+
+    resp = client.get(
+        '/books/?q=EX-C1',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert book.id in [x['id'] for x in resp.json()['items']]
+
+
+@pytest.mark.asyncio
+async def test_list_books_filter_q_super_admin(
+    session, client, super_admin, super_admin_token
+):
+    book = BookFactory(user_id=super_admin.id, title='QFilter')
+    session.add(book)
+    await session.commit()
+
+    resp = client.get(
+        '/books/?q=QFilter',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert book.id in [x['id'] for x in resp.json()['items']]
+
+
+@pytest.mark.asyncio
+async def test_list_books_filter_isbn(session, client, user, token):
+    book = BookFactory(user_id=user.id, isbn='9780000000011')
+    session.add(book)
+    await session.commit()
+    session.add(
+        BookCopyFactory(
+            book_id=book.id, user_id=user.id, school_id=user.school_id
+        )
+    )
+    await session.commit()
+
+    resp = client.get(
+        '/books/?isbn=978-0-00-000001-1',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert book.id in [x['id'] for x in resp.json()['items']]
+
+
+@pytest.mark.asyncio
+async def test_list_books_filter_internal_code(session, client, user, token):
+    book = BookFactory(user_id=user.id)
+    session.add(book)
+    await session.commit()
+    session.add(
+        BookCopyFactory(
+            book_id=book.id,
+            user_id=user.id,
+            school_id=user.school_id,
+            code='PATR-100',
+        )
+    )
+    await session.commit()
+
+    resp = client.get(
+        '/books/?internal_code=PATR-100',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert book.id in [x['id'] for x in resp.json()['items']]
+
+
+# ---------------------------------------------------------------------------
+# coverage: GET /books/{book_id}
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_get_book_success(session, client, user, token):
+    book = BookFactory(user_id=user.id)
+    session.add(book)
+    await session.commit()
+    session.add(
+        BookCopyFactory(
+            book_id=book.id, user_id=user.id, school_id=user.school_id
+        )
+    )
+    await session.commit()
+
+    resp = client.get(
+        f'/books/{book.id}',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()['id'] == book.id
+    assert resp.json()['derived_state'] == 'available'
+
+
+def test_get_book_not_found(client, token):
+    resp = client.get(
+        '/books/99999',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+def test_get_book_without_school_forbidden(client, book):
+    from src.app import app
+    from src.models import User, UserRole
+    from src.security import get_current_user
+
+    fake_user = User(
+        username='noschool5',
+        email='noschool5@ex.com',
+        password='h',
+        role=UserRole.LIBRARIAN,
+        school_id=None,
+        is_active=True,
+    )
+    fake_user.id = 9995
+
+    async def fake():
+        return fake_user
+
+    app.dependency_overrides[get_current_user] = fake
+    try:
+        resp = client.get(
+            f'/books/{book.id}',
+            headers={'Authorization': 'Bearer fake'},
+        )
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_book_not_in_school(
+    session, client, user, token, other_school
+):
+    book = BookFactory(user_id=user.id)
+    session.add(book)
+    await session.commit()
+    session.add(
+        BookCopyFactory(
+            book_id=book.id, user_id=user.id, school_id=other_school.id
+        )
+    )
+    await session.commit()
+
+    resp = client.get(
+        f'/books/{book.id}',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert resp.status_code == HTTPStatus.NOT_FOUND

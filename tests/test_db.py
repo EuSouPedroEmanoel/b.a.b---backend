@@ -39,6 +39,10 @@ async def test_create_user(session: AsyncSession, mock_db_time):
         'updated_at': time,
         'books': [],
         'copies': [],
+        'cpf': None,
+        'birthdate': None,
+        'turma_numero': None,
+        'turma_letra': None,
     }
 
 

@@ -143,6 +143,7 @@ def test_create_user_invalid_role_via_extra(client, school, super_admin_token):
         json={
             'username': 'invalid_extra',
             'email': 'invalid_extra@ex.com',
+            'cpf': '11144477735',
             'password': 'secret',
             'role': 'school_admin',
             'school_id': school.id,
