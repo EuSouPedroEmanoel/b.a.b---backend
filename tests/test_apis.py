@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from scr.utils import apis
+from src.utils import apis
 
 
 @pytest.mark.asyncio
@@ -16,7 +16,7 @@ async def test_fetch_json_success():
     mock_client.__aenter__.return_value = mock_client
     mock_client.__aexit__.return_value = False
 
-    with patch('scr.utils.apis.httpx.AsyncClient', return_value=mock_client):
+    with patch('src.utils.apis.httpx.AsyncClient', return_value=mock_client):
         data = await apis._fetch_json('http://example.com')  # noqa: SLF001
         assert data == {'ok': True}
 
@@ -31,7 +31,7 @@ async def test_fetch_json_non_ok():
     mock_client.__aenter__.return_value = mock_client
     mock_client.__aexit__.return_value = False
 
-    with patch('scr.utils.apis.httpx.AsyncClient', return_value=mock_client):
+    with patch('src.utils.apis.httpx.AsyncClient', return_value=mock_client):
         data = await apis._fetch_json('http://example.com')  # noqa: SLF001
         assert data is None
 
@@ -43,7 +43,7 @@ async def test_fetch_json_exception():
     mock_client.__aenter__.return_value = mock_client
     mock_client.__aexit__.return_value = False
 
-    with patch('scr.utils.apis.httpx.AsyncClient', return_value=mock_client):
+    with patch('src.utils.apis.httpx.AsyncClient', return_value=mock_client):
         data = await apis._fetch_json('http://example.com')  # noqa: SLF001
         assert data is None
 
@@ -52,12 +52,10 @@ async def test_fetch_json_exception():
 async def test_get_google_book_info_google_success():
     google_data = {
         'totalItems': 1,
-        'items': [
-            {'volumeInfo': {'title': 'T1', 'description': 'D1'}}
-        ],
+        'items': [{'volumeInfo': {'title': 'T1', 'description': 'D1'}}],
     }
     with patch(
-        'scr.utils.apis._fetch_json', return_value=google_data
+        'src.utils.apis._fetch_json', return_value=google_data
     ) as mock_fetch:
         result = await apis.get_google_book_info('123')
         assert result == {'title': 'T1', 'description': 'D1'}
@@ -71,18 +69,18 @@ async def test_get_google_book_info_fallback_brasilapi():
             return {'totalItems': 0}
         return {'title': 'BR Title', 'synopsis': 'BR Desc'}
 
-    with patch('scr.utils.apis._fetch_json', side_effect=fake_fetch):
+    with patch('src.utils.apis._fetch_json', side_effect=fake_fetch):
         result = await apis.get_google_book_info('123')
         assert result == {'title': 'BR Title', 'description': 'BR Desc'}
 
 
 @pytest.mark.asyncio
 async def test_get_google_book_info_both_fail():
-    with patch('scr.utils.apis._fetch_json', return_value=None):
+    with patch('src.utils.apis._fetch_json', return_value=None):
         result = await apis.get_google_book_info('123')
         assert result == {}
 
-    with patch('scr.utils.apis._fetch_json', return_value={}):
+    with patch('src.utils.apis._fetch_json', return_value={}):
         result = await apis.get_google_book_info('123')
         assert result == {}
 
@@ -91,7 +89,7 @@ async def test_get_google_book_info_both_fail():
             return {'totalItems': 0}
         return None
 
-    with patch('scr.utils.apis._fetch_json', side_effect=fake_fetch2):
+    with patch('src.utils.apis._fetch_json', side_effect=fake_fetch2):
         result = await apis.get_google_book_info('123')
         assert result == {}
 
@@ -102,6 +100,6 @@ async def test_get_google_book_info_google_no_description():
         'totalItems': 1,
         'items': [{'volumeInfo': {}}],
     }
-    with patch('scr.utils.apis._fetch_json', return_value=google_data):
+    with patch('src.utils.apis._fetch_json', return_value=google_data):
         result = await apis.get_google_book_info('123')
         assert result == {'title': None, 'description': None}

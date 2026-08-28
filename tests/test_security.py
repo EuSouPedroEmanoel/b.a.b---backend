@@ -6,8 +6,8 @@ import pytest
 from fastapi import HTTPException
 from jwt import decode, encode
 
-from scr.models import UserRole
-from scr.security import (
+from src.models import UserRole
+from src.security import (
     RoleChecker,
     create_access_token,
     get_current_active_super_admin,
@@ -15,7 +15,7 @@ from scr.security import (
     get_password_hash,
     verify_password,
 )
-from scr.settings import Settings
+from src.settings import Settings
 
 
 def test_jwt(settings):
@@ -124,3 +124,183 @@ async def test_get_current_school_admin_forbidden(user):
     with pytest.raises(HTTPException) as exc:
         await get_current_school_admin(user)
     assert exc.value.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_is_token_revoked(session):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from src.models import RevokedToken
+    from src.security import _is_token_revoked  # noqa: PLC2701
+
+    jti = 'test-jti-revoked'
+    assert await _is_token_revoked(session, jti) is False
+    rt = RevokedToken(
+        jti=jti,
+        expires_at=datetime.now(tz=ZoneInfo('UTC')) + timedelta(hours=1),
+    )
+    session.add(rt)
+    await session.commit()
+    assert await _is_token_revoked(session, jti) is True
+
+
+def test_refresh_token_as_access_forbidden(client, user):
+    # login to get refresh, try to use refresh as Bearer
+    resp = client.post(
+        '/auth/token',
+        data={'username': user.username, 'password': user.clean_password},
+    )
+    refresh = resp.json()['refresh_token']
+    # try to access protected endpoint with refresh token
+    resp2 = client.get(
+        '/users/', headers={'Authorization': f'Bearer {refresh}'}
+    )
+    assert resp2.status_code == HTTPStatus.UNAUTHORIZED
+    assert resp2.json()['detail'] == 'Could not validate credentials'
+
+
+@pytest.mark.asyncio
+async def test_get_refresh_user_success(session, user):
+    from src.security import create_token_pair, get_refresh_user
+
+    # create token pair for user
+    _access, refresh, jti, exp = create_token_pair(user.username)
+    result = await get_refresh_user(refresh, session)
+    assert result.username == user.username
+
+
+@pytest.mark.asyncio
+async def test_get_refresh_user_invalid_type(session, user):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from jwt import encode
+
+    from src.security import get_refresh_user
+    from src.settings import Settings
+
+    settings = Settings()
+    exp = datetime.now(tz=ZoneInfo('UTC')) + timedelta(minutes=30)
+    token = encode(
+        {
+            'sub': user.username,
+            'exp': exp,
+            'type': 'access',
+            'jti': 'jti-access',
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    with pytest.raises(HTTPException) as exc:
+        await get_refresh_user(token, session)
+    assert exc.value.status_code == HTTPStatus.UNAUTHORIZED
+
+
+@pytest.mark.asyncio
+async def test_get_refresh_user_missing_jti(session, user):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from jwt import encode
+
+    from src.security import get_refresh_user
+    from src.settings import Settings
+
+    settings = Settings()
+    exp = datetime.now(tz=ZoneInfo('UTC')) + timedelta(minutes=30)
+    token = encode(
+        {'sub': user.username, 'exp': exp, 'type': 'refresh'},
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    with pytest.raises(HTTPException):
+        await get_refresh_user(token, session)
+
+
+@pytest.mark.asyncio
+async def test_get_refresh_user_revoked(session, user):
+
+    from src.models import RevokedToken
+    from src.security import create_token_pair, get_refresh_user
+
+    _access, refresh, jti, exp = create_token_pair(user.username)
+    # revoke
+    session.add(RevokedToken(jti=jti, expires_at=exp))
+    await session.commit()
+    with pytest.raises(HTTPException) as exc:
+        await get_refresh_user(refresh, session)
+    assert 'revoked' in exc.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_get_refresh_user_expired(session, user):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from jwt import encode
+
+    from src.security import get_refresh_user
+    from src.settings import Settings
+
+    settings = Settings()
+    expired = datetime.now(tz=ZoneInfo('UTC')) - timedelta(minutes=5)
+    token = encode(
+        {
+            'sub': user.username,
+            'exp': expired,
+            'type': 'refresh',
+            'jti': 'jti-exp2',
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    with pytest.raises(HTTPException):
+        await get_refresh_user(token, session)
+
+
+@pytest.mark.asyncio
+async def test_get_refresh_user_invalid_token(session):
+    from src.security import get_refresh_user
+
+    with pytest.raises(HTTPException):
+        await get_refresh_user('invalid.token', session)
+
+
+@pytest.mark.asyncio
+async def test_get_refresh_user_not_found(session):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from jwt import encode
+
+    from src.security import get_refresh_user
+    from src.settings import Settings
+
+    settings = Settings()
+    exp = datetime.now(tz=ZoneInfo('UTC')) + timedelta(minutes=30)
+    token = encode(
+        {
+            'sub': 'ghost_user_123',
+            'exp': exp,
+            'type': 'refresh',
+            'jti': 'jti-ghost',
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    with pytest.raises(HTTPException):
+        await get_refresh_user(token, session)
+
+
+@pytest.mark.asyncio
+async def test_get_refresh_user_inactive(session, user):
+
+    from src.security import create_token_pair, get_refresh_user
+
+    _access, refresh, jti, exp = create_token_pair(user.username)
+    user.is_active = False
+    session.add(user)
+    await session.commit()
+    with pytest.raises(HTTPException):
+        await get_refresh_user(refresh, session)

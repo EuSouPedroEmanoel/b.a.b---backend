@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     ALGORITHM: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int
+    REFRESH_TOKEN_EXPIRE_MINUTES: int = 1440
+    LOAN_DAYS_DEFAULT: int = 14
+    LOAN_MIN_DAYS: int = 1
     SUPER_ADMIN_USERNAME: str = 'superadmin'
     SUPER_ADMIN_EMAIL: str = 'superadmin@exemplo.com'
     SUPER_ADMIN_PASSWORD: str = 'superadmin123'

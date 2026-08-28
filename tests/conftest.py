@@ -1,10 +1,12 @@
 import os
 
 # Garante que Settings() funciona mesmo sem .env (CI) para chaves não sensíveis
-# SUPER_ADMIN fica com defaults em scr/settings.py:14-16
+# SUPER_ADMIN fica com defaults em src/settings.py:14-16
 # e mock via fixture mock_super_admin_settings
-# DEVE vir antes de importar scr.* que instanciam Settings()
-os.environ.setdefault('DATABASE_URL', 'postgresql+psycopg://test:test@localhost:5432/test')
+# DEVE vir antes de importar src.* que instanciam Settings()
+os.environ.setdefault(
+    'DATABASE_URL', 'postgresql+psycopg://test:test@localhost:5432/test'
+)
 os.environ.setdefault('GOOGLE_BOOKS_API_KEY', 'test-key')
 os.environ.setdefault('SECRET_KEY', 'test-secret-key-for-tests-1234567890')
 os.environ.setdefault('ALGORITHM', 'HS256')
@@ -22,12 +24,21 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from testcontainers.postgres import PostgresContainer
 
-from scr.app import app
-from scr.database import get_session
-from scr.models import School, User, UserRole, table_registry
-from scr.security import get_password_hash
-from scr.settings import Settings
+from src.app import app
+from src.database import get_session
+from src.models import School, User, UserRole, table_registry
+from src.security import get_password_hash
+from src.settings import Settings
 from tests.factories import BookFactory, SchoolFactory
+
+
+@pytest.fixture(autouse=True)
+def reset_limiter():
+    from src.limiter import limiter
+
+    limiter.reset()
+    yield
+    limiter.reset()
 
 
 @pytest.fixture
@@ -56,7 +67,7 @@ async def session(engine):
     async with engine.begin() as conn:
         await conn.run_sync(table_registry.metadata.create_all)
 
-    async with AsyncSession(engine) as session:
+    async with AsyncSession(engine, expire_on_commit=False) as session:
         yield session
 
     async with engine.begin() as conn:
@@ -216,12 +227,68 @@ def mock_super_admin_settings(monkeypatch):
     monkeypatch.setenv('SUPER_ADMIN_USERNAME', 'mock_super')
     monkeypatch.setenv('SUPER_ADMIN_EMAIL', 'mock@exemplo.com')
     monkeypatch.setenv('SUPER_ADMIN_PASSWORD', 'mock123')
-    # patch no objeto já instanciado em scr.seeds / scr.security se necessário
-    with patch('scr.settings.Settings') as MockSettings:
+    # patch no objeto já instanciado em src.seeds / src.security se necessário
+    with patch('src.settings.Settings') as MockSettings:
         MockSettings.return_value.SUPER_ADMIN_USERNAME = 'mock_super'
         MockSettings.return_value.SUPER_ADMIN_EMAIL = 'mock@exemplo.com'
         MockSettings.return_value.SUPER_ADMIN_PASSWORD = 'mock123'
         yield MockSettings
+
+
+@pytest_asyncio.fixture
+async def student(session: AsyncSession, school: School):
+    password = 'testteste'
+    st = UserFactory(
+        password=get_password_hash(password),
+        role=UserRole.STUDENT,
+        school_id=school.id,
+    )
+    session.add(st)
+    await session.commit()
+    await session.refresh(st)
+    session.expunge(st)
+    st.clean_password = password  # type: ignore[attr-defined]
+    return st
+
+
+@pytest_asyncio.fixture
+async def teacher(session: AsyncSession, school: School):
+    password = 'testteste'
+    t = UserFactory(
+        password=get_password_hash(password),
+        role=UserRole.TEACHER,
+        school_id=school.id,
+    )
+    session.add(t)
+    await session.commit()
+    await session.refresh(t)
+    session.expunge(t)
+    t.clean_password = password  # type: ignore[attr-defined]
+    return t
+
+
+@pytest.fixture
+def student_token(client, student):
+    response = client.post(
+        '/auth/token',
+        data={
+            'username': student.username,
+            'password': student.clean_password,
+        },
+    )
+    return response.json()['access_token']
+
+
+@pytest.fixture
+def teacher_token(client, teacher):
+    response = client.post(
+        '/auth/token',
+        data={
+            'username': teacher.username,
+            'password': teacher.clean_password,
+        },
+    )
+    return response.json()['access_token']
 
 
 @pytest_asyncio.fixture

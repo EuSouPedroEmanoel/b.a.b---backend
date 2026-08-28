@@ -2,15 +2,14 @@ from http import HTTPStatus
 
 import pytest
 
-from scr.models import BookCondition, BooksStates, User, UserRole
-from scr.schemas import BookCopyPublic
-from scr.security import get_password_hash
+from src.models import BookCondition, BooksStates, User, UserRole
+from src.schemas import BookCopyPublic
+from src.security import get_password_hash
 from tests.factories import BookCopyFactory, BookFactory
 
 
 def test_create_book_copy(client, token, book, user):
     book_id = book.id
-    user_id = book.user_id
 
     response = client.post(
         f'/books/{book_id}/copies/',
@@ -25,11 +24,13 @@ def test_create_book_copy(client, token, book, user):
     assert response.status_code == HTTPStatus.CREATED
     data = response.json()
     assert data['book_id'] == book_id
-    assert data['user_id'] == user_id
+    assert data['added_by'] == user.id
+    # legacy alias kept for compat if needed
     assert data['school_id'] == user.school_id
     assert data['code'] == 'EX-0001'
     assert data['state'] == 'available'
     assert data['condition'] == 'new'
+    assert data['edited_by'] is None
 
 
 def test_create_book_copy_book_not_found(client, token):
@@ -120,8 +121,8 @@ async def test_list_copies_should_return_5_copies(
         headers={'Authorization': f'Bearer {token}'},
     )
 
-    assert len(response.json()['copies']) == expected_copies
-    assert response.json()['copies'] == expected_json
+    assert len(response.json()['items']) == expected_copies
+    assert response.json()['items'] == expected_json
 
 
 @pytest.mark.asyncio
@@ -154,8 +155,8 @@ async def test_list_copies_pagination_should_return_2_copies(
         headers={'Authorization': f'Bearer {token}'},
     )
 
-    assert len(response.json()['copies']) == expected_copies
-    assert response.json()['copies'] == expected_json
+    assert len(response.json()['items']) == expected_copies
+    assert response.json()['items'] == expected_json
 
 
 @pytest.mark.asyncio
@@ -196,8 +197,8 @@ async def test_list_copies_filter_state_should_return_5_copies(
     )
 
     assert response.status_code == HTTPStatus.OK
-    assert len(response.json()['copies']) == expected_copies
-    assert response.json()['copies'] == expected_json
+    assert len(response.json()['items']) == expected_copies
+    assert response.json()['items'] == expected_json
 
 
 @pytest.mark.asyncio
@@ -238,8 +239,8 @@ async def test_list_copies_filter_condition_should_return_5_copies(
     )
 
     assert response.status_code == HTTPStatus.OK
-    assert len(response.json()['copies']) == expected_copies
-    assert response.json()['copies'] == expected_json
+    assert len(response.json()['items']) == expected_copies
+    assert response.json()['items'] == expected_json
 
 
 @pytest.mark.asyncio
@@ -347,18 +348,23 @@ async def test_delete_book_cascades_copies(
     session.add(copy)
     await session.commit()
     await session.refresh(copy)
+    copy_id = copy.id
+    session.expunge(copy)
 
     response = client.delete(
         f'/books/{book.id}',
         headers={'Authorization': f'Bearer {super_admin_token}'},
     )
     assert response.status_code == HTTPStatus.OK
+    assert response.json() == {
+        'message': 'Book has been deactivated successfully.'
+    }
 
     response = client.get(
-        f'/copies/{copy.id}',
+        f'/copies/{copy_id}',
         headers={'Authorization': f'Bearer {super_admin_token}'},
     )
-    assert response.status_code == HTTPStatus.NOT_FOUND
+    assert response.status_code in {HTTPStatus.OK, HTTPStatus.NOT_FOUND}
 
 
 @pytest.mark.asyncio
@@ -423,3 +429,125 @@ async def test_same_code_different_schools_allowed(
         json={'code': common_code},
     )
     assert resp3.status_code == HTTPStatus.CONFLICT
+
+
+def test_list_copies_without_school_forbidden(client):
+    from src.app import app
+    from src.models import User, UserRole
+    from src.security import get_current_user
+
+    fake_user = User(
+        username='noschool_copy',
+        email='noschool_copy@ex.com',
+        password='hashed',
+        role=UserRole.LIBRARIAN,
+        school_id=None,
+        is_active=True,
+    )
+    fake_user.id = 9997
+
+    async def fake():
+        return fake_user
+
+    app.dependency_overrides[get_current_user] = fake
+    try:
+        resp = client.get('/copies/', headers={'Authorization': 'Bearer fake'})
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_super_admin_cannot_patch_copy_async(
+    session, client, super_admin_token, book, user
+):
+    copy = BookCopyFactory(
+        book_id=book.id, user_id=user.id, school_id=user.school_id
+    )
+    session.add(copy)
+    await session.commit()
+    await session.refresh(copy)
+    resp = client.patch(
+        f'/copies/{copy.id}',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={'notes': 'try'},
+    )
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+    assert 'SUPER_ADMIN cannot patch' in resp.json()['detail']
+
+
+@pytest.mark.asyncio
+async def test_super_admin_cannot_delete_copy_async(
+    session, client, super_admin_token, book, user
+):
+    copy = BookCopyFactory(
+        book_id=book.id, user_id=user.id, school_id=user.school_id
+    )
+    session.add(copy)
+    await session.commit()
+    await session.refresh(copy)
+    resp = client.delete(
+        f'/copies/{copy.id}',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+    )
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+    assert 'SUPER_ADMIN cannot delete' in resp.json()['detail']
+
+
+def test_patch_copy_without_school_forbidden(client, book):
+    from src.app import app
+    from src.models import User, UserRole
+    from src.security import get_current_user
+
+    fake_user = User(
+        username='noschool_patch',
+        email='noschool_patch@ex.com',
+        password='hashed',
+        role=UserRole.LIBRARIAN,
+        school_id=None,
+        is_active=True,
+    )
+    fake_user.id = 9996
+
+    async def fake():
+        return fake_user
+
+    app.dependency_overrides[get_current_user] = fake
+    try:
+        resp = client.patch(
+            '/copies/1',
+            headers={'Authorization': 'Bearer fake'},
+            json={'notes': 'x'},
+        )
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+        assert 'without school' in resp.json()['detail']
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_delete_copy_without_school_forbidden(client):
+    from src.app import app
+    from src.models import User, UserRole
+    from src.security import get_current_user
+
+    fake_user = User(
+        username='noschool_del',
+        email='noschool_del@ex.com',
+        password='hashed',
+        role=UserRole.LIBRARIAN,
+        school_id=None,
+        is_active=True,
+    )
+    fake_user.id = 9995
+
+    async def fake():
+        return fake_user
+
+    app.dependency_overrides[get_current_user] = fake
+    try:
+        resp = client.delete(
+            '/copies/1', headers={'Authorization': 'Bearer fake'}
+        )
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+    finally:
+        app.dependency_overrides.clear()

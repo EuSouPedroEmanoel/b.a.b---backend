@@ -3,7 +3,7 @@ from http import HTTPStatus
 import pytest
 from sqlalchemy import select
 
-from scr.models import School
+from src.models import School
 
 
 def test_create_school_success(client, super_admin_token):
@@ -45,8 +45,8 @@ def test_list_schools_success(client, super_admin_token, school):
         headers={'Authorization': f'Bearer {super_admin_token}'},
     )
     assert resp.status_code == HTTPStatus.OK
-    assert 'schools' in resp.json()
-    assert len(resp.json()['schools']) >= 1
+    assert 'items' in resp.json()
+    assert len(resp.json()['items']) >= 1
 
 
 def test_list_schools_pagination(client, super_admin_token, school):
@@ -55,7 +55,7 @@ def test_list_schools_pagination(client, super_admin_token, school):
         headers={'Authorization': f'Bearer {super_admin_token}'},
     )
     assert resp.status_code == HTTPStatus.OK
-    assert len(resp.json()['schools']) == 1
+    assert len(resp.json()['items']) == 1
 
 
 def test_list_schools_forbidden(client, token):
@@ -133,9 +133,7 @@ async def test_create_school_admin_inactive(
     assert resp.json()['detail'] == 'School is inactive'
 
 
-def test_create_school_admin_conflict(
-    client, super_admin_token, school, user
-):
+def test_create_school_admin_conflict(client, super_admin_token, school, user):
     # user already exists with username/email
     resp = client.post(
         f'/schools/{school.id}/admins',

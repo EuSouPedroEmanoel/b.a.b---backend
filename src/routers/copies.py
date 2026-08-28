@@ -5,21 +5,32 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from scr.database import get_session
-from scr.models import BookCopy, User, UserRole
-from scr.schemas import (
-    BookCopyList,
+from src.database import get_session
+from src.models import BookCopy, User, UserRole
+from src.schemas import (
     BookCopyPublic,
     BookCopyUpdate,
     FilterCopy,
     Message,
+    PaginatedResponse,
 )
-from scr.security import get_current_user
+from src.security import RoleChecker, get_current_user
+from src.utils.pagination import paginate
 
 router = APIRouter(prefix='/copies', tags=['copies'])
 
 Session = Annotated[AsyncSession, Depends(get_session)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
+StaffOnly = Annotated[
+    User,
+    Depends(
+        RoleChecker([
+            UserRole.LIBRARIAN,
+            UserRole.SCHOOL_ADMIN,
+            UserRole.SUPER_ADMIN,
+        ])
+    ),
+]
 
 
 def _resolve_school_filter(user: User, copy_filter: FilterCopy) -> int | None:
@@ -34,7 +45,7 @@ def _resolve_school_filter(user: User, copy_filter: FilterCopy) -> int | None:
     return user.school_id
 
 
-@router.get('/', response_model=BookCopyList)
+@router.get('/', response_model=PaginatedResponse[BookCopyPublic])
 async def list_copies(
     session: Session,
     user: CurrentUser,
@@ -42,7 +53,7 @@ async def list_copies(
 ):
     school_id = _resolve_school_filter(user, copy_filter)
 
-    sttm = select(BookCopy)
+    sttm = select(BookCopy).order_by(BookCopy.id)
     if school_id is not None:
         sttm = sttm.where(BookCopy.school_id == school_id)
 
@@ -50,12 +61,19 @@ async def list_copies(
         sttm = sttm.where(BookCopy.state == copy_filter.state)
     if copy_filter.condition:
         sttm = sttm.where(BookCopy.condition == copy_filter.condition)
+    if copy_filter.book_id:
+        sttm = sttm.where(BookCopy.book_id == copy_filter.book_id)
 
-    copies = await session.scalars(
-        sttm.limit(copy_filter.limit).offset(copy_filter.offset)
+    items, total, page, size, pages = await paginate(
+        session, sttm, copy_filter
     )
-
-    return {'copies': copies.all()}
+    return {
+        'items': items,
+        'total': total,
+        'page': page,
+        'size': size,
+        'pages': pages,
+    }
 
 
 @router.get('/{copy_id}', response_model=BookCopyPublic)
@@ -80,7 +98,7 @@ async def read_copy_by_id(copy_id: int, session: Session, user: CurrentUser):
 async def patch_copy(
     copy_id: int,
     session: Session,
-    user: CurrentUser,
+    user: StaffOnly,
     copy: BookCopyUpdate,
 ):
     if user.role == UserRole.SUPER_ADMIN:
@@ -108,6 +126,7 @@ async def patch_copy(
     for key, value in copy.model_dump(exclude_unset=True).items():
         setattr(db_copy, key, value)
 
+    db_copy.edited_by = user.id
     session.add(db_copy)
     await session.commit()
     await session.refresh(db_copy)
@@ -116,7 +135,7 @@ async def patch_copy(
 
 
 @router.delete('/{copy_id}', response_model=Message)
-async def delete_copy(copy_id: int, session: Session, user: CurrentUser):
+async def delete_copy(copy_id: int, session: Session, user: StaffOnly):
     if user.role == UserRole.SUPER_ADMIN:
         raise HTTPException(
             status_code=HTTPStatus.FORBIDDEN,

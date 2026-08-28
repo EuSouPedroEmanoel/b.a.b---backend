@@ -1,23 +1,24 @@
 from http import HTTPStatus
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from scr.database import get_session
-from scr.models import School, User, UserRole
-from scr.schemas import (
+from src.database import get_session
+from src.models import School, User, UserRole
+from src.schemas import (
     FilterPage,
     Message,
+    PaginatedResponse,
     SchoolAdminCreateSchema,
-    SchoolList,
     SchoolPublic,
     SchoolSchema,
     UserPublic,
 )
-from scr.security import get_current_active_super_admin, get_password_hash
+from src.security import get_current_active_super_admin, get_password_hash
+from src.utils.pagination import paginate
 
 router = APIRouter(prefix='/schools', tags=['schools'])
 
@@ -45,15 +46,23 @@ async def create_school(
     return db_school
 
 
-@router.get('/', response_model=SchoolList)
+@router.get('/', response_model=PaginatedResponse[SchoolPublic])
 async def list_schools(
     session: Session,
     _: SuperAdmin,
-    filter_page: Annotated[FilterPage, Query()],
+    filter_page: Annotated[FilterPage, Depends()],
 ):
-    sttm = select(School).limit(filter_page.limit).offset(filter_page.offset)
-    schools = await session.scalars(sttm)
-    return {'schools': schools.all()}
+    sttm = select(School).order_by(School.id)
+    items, total, page, size, pages = await paginate(
+        session, sttm, filter_page
+    )
+    return {
+        'items': items,
+        'total': total,
+        'page': page,
+        'size': size,
+        'pages': pages,
+    }
 
 
 @router.post(
@@ -81,6 +90,7 @@ async def create_school_admin(
     db_user = User(
         username=admin.username,
         email=admin.email,
+        cpf=admin.cpf,
         password=hashed,
         role=UserRole.SCHOOL_ADMIN,
         school_id=school.id,
@@ -92,7 +102,7 @@ async def create_school_admin(
         await session.rollback()
         raise HTTPException(
             status_code=HTTPStatus.CONFLICT,
-            detail='Username or Email already exists',
+            detail='Username, Email or CPF already exists',
         )
     await session.refresh(db_user)
     return db_user

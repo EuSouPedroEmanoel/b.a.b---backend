@@ -3,9 +3,9 @@ import asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from scr.models import User, UserRole
-from scr.security import get_password_hash
-from scr.settings import Settings
+from src.models import User, UserRole
+from src.security import get_password_hash
+from src.settings import Settings
 
 settings = Settings()
 
@@ -36,5 +36,5 @@ async def seed_super_admin():
         return user
 
 
-if __name__ == '__main__':
-    asyncio.run(seed_super_admin())
+if __name__ == '__main__':  # pragma: no cover
+    asyncio.run(seed_super_admin())  # pragma: no cover

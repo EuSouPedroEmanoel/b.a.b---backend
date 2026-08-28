@@ -197,6 +197,11 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# Frontend deps acidentalmente instalados no backend
+node_modules/
+package.json
+package-lock.json
+
 # PyPI configuration file
 .pypirc
 
