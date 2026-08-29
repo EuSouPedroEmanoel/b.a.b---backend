@@ -23,7 +23,7 @@ app = FastAPI()
 app.state.limiter = limiter
 
 # CORS para frontend Vite (W3C: permitir credenciais se necessário)
-# allow_origin_regex libera localhost + IPs de rede (192.168.x.x, 10.x.x.x, 172.16-31.x.x) para acesso via Network do Vite
+# allow_origin_regex libera localhost + IPs de rede (192.168.x.x, 10.x.x.x, 172.16-31.x.x) para acesso via Network do Vite  # noqa: E501
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

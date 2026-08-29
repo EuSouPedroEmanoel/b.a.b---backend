@@ -91,9 +91,12 @@ async def _make_unique_username(
     session: AsyncSession, name: str, cpf: str
 ) -> str:
     base = (
-        name.strip().lower()
+        name
+        .strip()
+        .lower()
         .replace(' ', '.')
-        .encode('ascii', 'ignore').decode('ascii')
+        .encode('ascii', 'ignore')
+        .decode('ascii')
     )
     base = base or f'student.{cpf[-4:]}'
     candidate, n = base, 1

@@ -109,8 +109,8 @@ def validate_birthdate(dt: date) -> date:
     today = date.today()
     if dt >= today:
         raise ValueError('birthdate deve ser uma data no passado')
-    age = today.year - dt.year - (
-        (today.month, today.day) < (dt.month, dt.day)
+    age = (
+        today.year - dt.year - ((today.month, today.day) < (dt.month, dt.day))
     )
     if not (MIN_STUDENT_AGE_YEARS <= age <= MAX_STUDENT_AGE_YEARS):
         raise ValueError(
@@ -304,9 +304,17 @@ class FilterBook(FilterPage):
     author: str | None = Field(
         default=None, description='Nome ou slug do autor'
     )
-    sort_by: Literal['title', 'created_at', 'updated_at', 'published_date', 'author', 'id'] | None = Field(
-        default=None, description='Campo de ordenação'
-    )
+    sort_by: (
+        Literal[
+            'title',
+            'created_at',
+            'updated_at',
+            'published_date',
+            'author',
+            'id',
+        ]
+        | None
+    ) = Field(default=None, description='Campo de ordenação')
     sort_order: Literal['asc', 'desc'] | None = Field(
         default=None, description='Direção da ordenação'
     )
