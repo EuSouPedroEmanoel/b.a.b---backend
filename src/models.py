@@ -5,7 +5,10 @@ from enum import Enum
 
 from sqlalchemy import (
     CheckConstraint,
+    Column,
     ForeignKey,
+    String,
+    Table,
     UniqueConstraint,
     case,
     func,
@@ -21,6 +24,21 @@ from sqlalchemy.orm import (
 )
 
 table_registry = registry()
+
+# association tables for N:N Book <-> Genre / Author (global)
+book_genres = Table(
+    'book_genres',
+    table_registry.metadata,
+    Column('book_id', ForeignKey('books.id', ondelete='CASCADE'), primary_key=True),
+    Column('genre_id', ForeignKey('genres.id', ondelete='CASCADE'), primary_key=True),
+)
+
+book_authors = Table(
+    'book_authors',
+    table_registry.metadata,
+    Column('book_id', ForeignKey('books.id', ondelete='CASCADE'), primary_key=True),
+    Column('author_id', ForeignKey('authors.id', ondelete='CASCADE'), primary_key=True),
+)
 
 
 class BooksStates(str, Enum):
@@ -157,6 +175,54 @@ class User:
 
 
 @table_registry.mapped_as_dataclass()
+class Genre:
+    __tablename__ = 'genres'
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    slug: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    books: Mapped[list[Book]] = relationship(
+        init=False,
+        secondary=book_genres,
+        back_populates='genres',
+        lazy='selectin',
+    )
+
+
+@table_registry.mapped_as_dataclass()
+class Author:
+    __tablename__ = 'authors'
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    slug: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    books: Mapped[list[Book]] = relationship(
+        init=False,
+        secondary=book_authors,
+        back_populates='authors',
+        lazy='selectin',
+    )
+
+
+@table_registry.mapped_as_dataclass()
 class Book:
     __tablename__ = 'books'
 
@@ -175,6 +241,9 @@ class Book:
         kw_only=True, default=None, unique=True
     )
     cover_url: Mapped[str | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
+    )
+    published_date: Mapped[date | None] = mapped_column(
         kw_only=True, default=None, nullable=True
     )
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
@@ -199,6 +268,18 @@ class Book:
         init=False,
         back_populates='book',
         cascade='all, delete-orphan',
+        lazy='selectin',
+    )
+    genres: Mapped[list[Genre]] = relationship(
+        init=False,
+        secondary=book_genres,
+        back_populates='books',
+        lazy='selectin',
+    )
+    authors: Mapped[list[Author]] = relationship(
+        init=False,
+        secondary=book_authors,
+        back_populates='books',
         lazy='selectin',
     )
 

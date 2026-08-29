@@ -3,12 +3,12 @@ from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
-from src.models import Book, BookCopy, BooksStates, User, UserRole
+from src.models import Author, Book, BookCopy, BooksStates, Genre, User, UserRole, book_authors, book_genres
 from src.schemas import (
     BookCopyPublic,
     BookCopySchema,
@@ -24,11 +24,153 @@ from src.schemas import (
 )
 from src.security import RoleChecker, get_current_user
 from src.utils.apis import get_google_book_info
+from src.utils.authors import display_name_author, slugify_author
+from src.utils.genres import display_name_genre, slugify_genre
 from src.utils.pagination import paginate
 
 ISBN_MIN_LENGTH = 10
 
 router = APIRouter(tags=['books'], prefix='/books')
+
+
+async def _get_or_create_genre_by_name(session: AsyncSession, raw_name: str) -> Genre:
+    name = display_name_genre(raw_name)
+    if not name:
+        raise ValueError('Genre name empty')
+    slug = slugify_genre(name)
+    existing = await session.scalar(select(Genre).where(Genre.slug == slug))
+    if existing:
+        return existing
+    genre = Genre(name=name, slug=slug)
+    session.add(genre)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        existing2 = await session.scalar(select(Genre).where(Genre.slug == slug))
+        if existing2:
+            return existing2
+        raise
+    return genre
+
+
+async def _get_or_create_genres(session: AsyncSession, names: list[str]) -> list[Genre]:
+    result: list[Genre] = []
+    seen: set[str] = set()
+    for raw in names:
+        if not raw or not str(raw).strip():
+            continue
+        slug = slugify_genre(str(raw))
+        if slug in seen:
+            continue
+        seen.add(slug)
+        # skip empty slug
+        if not slug:
+            continue
+        genre = await _get_or_create_genre_by_name(session, str(raw))
+        result.append(genre)
+    return result
+
+
+async def _resolve_genres_for_book(
+    session: AsyncSession,
+    genre_ids: list[int] | None,
+    genre_names: list[str] | None,
+    fallback_genres: list[str] | None = None,
+) -> list[Genre]:
+    genres: list[Genre] = []
+    seen_ids: set[int] = set()
+    # explicit ids
+    if genre_ids:
+        for gid in genre_ids:
+            g = await session.scalar(select(Genre).where(Genre.id == gid))
+            if not g:
+                raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail=f'Genre {gid} not found')
+            if g.id not in seen_ids:
+                genres.append(g)
+                seen_ids.add(g.id)
+    # names -> get_or_create
+    names_to_create: list[str] = []
+    if genre_names:
+        names_to_create.extend(genre_names)
+    # fallback (from API) only if nothing else provided and no genres yet
+    if not genres and not names_to_create and fallback_genres:
+        names_to_create.extend(fallback_genres)
+    if names_to_create:
+        created = await _get_or_create_genres(session, names_to_create)
+        for g in created:
+            if g.id not in seen_ids:
+                genres.append(g)
+                seen_ids.add(g.id)
+    return genres
+
+
+async def _get_or_create_author_by_name(session: AsyncSession, raw_name: str) -> Author:
+    name = display_name_author(raw_name)
+    if not name:
+        raise ValueError('Author name empty')
+    slug = slugify_author(name)
+    existing = await session.scalar(select(Author).where(Author.slug == slug))
+    if existing:
+        return existing
+    author = Author(name=name, slug=slug)
+    session.add(author)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        existing2 = await session.scalar(select(Author).where(Author.slug == slug))
+        if existing2:
+            return existing2
+        raise
+    return author
+
+
+async def _get_or_create_authors(session: AsyncSession, names: list[str]) -> list[Author]:
+    result: list[Author] = []
+    seen: set[str] = set()
+    for raw in names:
+        if not raw or not str(raw).strip():
+            continue
+        slug = slugify_author(str(raw))
+        if slug in seen:
+            continue
+        seen.add(slug)
+        if not slug:
+            continue
+        author = await _get_or_create_author_by_name(session, str(raw))
+        result.append(author)
+    return result
+
+
+async def _resolve_authors_for_book(
+    session: AsyncSession,
+    author_ids: list[int] | None,
+    author_names: list[str] | None,
+    fallback_authors: list[str] | None = None,
+) -> list[Author]:
+    authors: list[Author] = []
+    seen_ids: set[int] = set()
+    if author_ids:
+        for aid in author_ids:
+            a = await session.scalar(select(Author).where(Author.id == aid))
+            if not a:
+                raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail=f'Author {aid} not found')
+            if a.id not in seen_ids:
+                authors.append(a)
+                seen_ids.add(a.id)
+    names_to_create: list[str] = []
+    if author_names:
+        names_to_create.extend(author_names)
+    if not authors and not names_to_create and fallback_authors:
+        names_to_create.extend(fallback_authors)
+    if names_to_create:
+        created = await _get_or_create_authors(session, names_to_create)
+        for a in created:
+            if a.id not in seen_ids:
+                authors.append(a)
+                seen_ids.add(a.id)
+    return authors
 
 Session = Annotated[AsyncSession, Depends(get_session)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
@@ -87,16 +229,51 @@ async def lookup_book(
             title=existing.title,
             description=existing.description,
             cover_url=existing.cover_url,
+            published_date=existing.published_date,
+            genres=[g.name for g in (existing.genres or [])],
+            authors=[a.name for a in (existing.authors or [])],
             found=True,
             already_exists=True,
             existing_book_id=existing.id,
         )
     data = await get_google_book_info(clean)
+    raw_genres = data.get('genres') or []
+    # padroniza para português (Fiction -> Ficção)
+    canonical_genres = [display_name_genre(g) for g in raw_genres if g.strip()]
+    # deduplica mantendo ordem
+    seen = set()
+    uniq_genres = []
+    for g in canonical_genres:
+        s = slugify_genre(g)
+        if s not in seen:
+            seen.add(s)
+            uniq_genres.append(g)
+    raw_authors = data.get('authors') or []
+    uniq_authors = []
+    seen_a = set()
+    for a in raw_authors:
+        if not a.strip():
+            continue
+        s = slugify_author(a)
+        if s not in seen_a:
+            seen_a.add(s)
+            uniq_authors.append(display_name_author(a))
+    pub_raw = data.get('published_date')
+    pub_date = None
+    if pub_raw:
+        try:
+            from datetime import date as _date
+            pub_date = _date.fromisoformat(str(pub_raw))
+        except Exception:
+            pub_date = None
     return BookLookupResponse(
         isbn=clean,
         title=data.get('title'),
         description=data.get('description'),
         cover_url=data.get('cover_url'),
+        published_date=pub_date,
+        genres=uniq_genres,
+        authors=uniq_authors,
         found=bool(data.get('title')),
         already_exists=False,
         existing_book_id=None,
@@ -159,10 +336,30 @@ async def suggest_books(
     raw = q.strip()
     if not raw:
         return BookSuggestResponse(items=[])
+    # Busca por título, gênero ou autor (autocomplete)
+    cond_title = Book.title.ilike(f'%{raw}%')
+    slug = slugify_genre(raw)
+    cond_genre = exists(
+        select(1)
+        .select_from(book_genres.join(Genre, Genre.id == book_genres.c.genre_id))
+        .where(
+            (book_genres.c.book_id == Book.id)
+            & ((Genre.name.ilike(f'%{raw}%')) | (Genre.slug == slug))
+        )
+    )
+    slug_a = slugify_author(raw)
+    cond_author = exists(
+        select(1)
+        .select_from(book_authors.join(Author, Author.id == book_authors.c.author_id))
+        .where(
+            (book_authors.c.book_id == Book.id)
+            & ((Author.name.ilike(f'%{raw}%')) | (Author.slug == slug_a))
+        )
+    )
     sttm = (
         select(Book)
         .where(Book.is_active.is_(True))
-        .where(Book.title.ilike(f'%{raw}%'))
+        .where(cond_title | cond_genre | cond_author)
         .order_by(Book.title)
         .limit(min(limit, 10))
     )
@@ -172,11 +369,13 @@ async def suggest_books(
                 status_code=HTTPStatus.FORBIDDEN,
                 detail='User without school cannot suggest books',
             )
+        # inclui livros órfãos (sem cópias) para que livro recém-cadastrado apareça na busca
         sttm = sttm.where(
             exists().select_from(BookCopy).where(
                 (BookCopy.book_id == Book.id)
                 & (BookCopy.school_id == user.school_id)
             )
+            | ~exists().select_from(BookCopy).where(BookCopy.book_id == Book.id)
         )
     books = await session.scalars(sttm)
     return BookSuggestResponse(items=list(books.all()))
@@ -214,6 +413,7 @@ async def create_book(
     title = (book.title or '').strip() or None
     description = book.description
     cover_url = book.cover_url
+    published_date = book.published_date
 
     google_data = (
         await get_google_book_info(isbn) if isbn else {}
@@ -222,6 +422,12 @@ async def create_book(
         title = title or google_data.get('title')
         description = description or google_data.get('description')
         cover_url = cover_url or google_data.get('cover_url')
+        if not published_date and google_data.get('published_date'):
+            try:
+                from datetime import date as _date
+                published_date = _date.fromisoformat(str(google_data.get('published_date')))
+            except Exception:
+                published_date = None
 
     if not title:
         raise HTTPException(
@@ -229,13 +435,27 @@ async def create_book(
             detail='Book information not found',
         )
 
+    # Resolve genres: explicit ids/names + fallback from API categories
+    fallback_genres = google_data.get('genres') if isbn else None
+    genres = await _resolve_genres_for_book(
+        session, book.genre_ids, book.genre_names, fallback_genres
+    )
+    # Resolve authors: explicit ids/names + fallback from API authors
+    fallback_authors = google_data.get('authors') if isbn else None
+    authors = await _resolve_authors_for_book(
+        session, book.author_ids, book.author_names, fallback_authors
+    )
+
     db_book = Book(
         title=title,
         description=description,
         cover_url=cover_url,
+        published_date=published_date,
         added_by=user.id,
         isbn=isbn,
     )
+    db_book.genres = genres
+    db_book.authors = authors
 
     session.add(db_book)
 
@@ -248,8 +468,10 @@ async def create_book(
             detail='This Book already exists',
         )
 
-    await session.refresh(db_book)
-    return db_book
+    await session.refresh(db_book, attribute_names=['genres', 'authors'])
+    # new book has no copies -> derived_state ARCHIVED, but compute via helper for consistency
+    derived = (await _derived_states(session, [db_book.id], None))[0]
+    return {**_book_public(db_book), 'derived_state': derived}
 
 
 @router.post(
@@ -319,15 +541,36 @@ async def create_book_copy(
 
 
 def _book_public(book: Book) -> dict:
+    genres_list = []
+    for g in (book.genres or []):
+        try:
+            genres_list.append({'id': g.id, 'name': g.name, 'slug': g.slug})
+        except Exception:
+            genres_list.append(g)
+    authors_list = []
+    for a in (book.authors or []):
+        try:
+            authors_list.append({'id': a.id, 'name': a.name, 'slug': a.slug})
+        except Exception:
+            authors_list.append(a)
     return {
         'id': book.id,
         'title': book.title,
         'description': book.description,
         'isbn': book.isbn,
         'cover_url': book.cover_url,
+        'published_date': book.published_date,
         'is_active': book.is_active,
         'added_by': book.added_by,
         'edited_by': book.edited_by,
+        'created_at': book.created_at,
+        'updated_at': book.updated_at,
+        'genres': genres_list,
+        'genre_ids': [g['id'] for g in genres_list],
+        'genre_names': [g['name'] for g in genres_list],
+        'authors': authors_list,
+        'author_ids': [a['id'] for a in authors_list],
+        'author_names': [a['name'] for a in authors_list],
     }
 
 
@@ -372,7 +615,36 @@ async def list_books(
         None if user.role == UserRole.SUPER_ADMIN else user.school_id
     )
 
-    sttm = select(Book).order_by(Book.id)
+    # ordenação — inclui 'author' via subquery do primeiro autor (ordem alfabética)
+    author_sort_subq = (
+        select(func.min(Author.name))
+        .select_from(book_authors.join(Author, Author.id == book_authors.c.author_id))
+        .where(book_authors.c.book_id == Book.id)
+        .correlate(Book)
+        .scalar_subquery()
+    )
+    if (book_filter.sort_by or 'id') == 'author':
+        sort_col = author_sort_subq
+        sort_dir = (book_filter.sort_order or 'asc').lower()
+        if sort_dir == 'desc':
+            sttm = select(Book).order_by(sort_col.desc().nulls_last(), Book.id.desc())
+        else:
+            sttm = select(Book).order_by(sort_col.asc().nulls_last(), Book.id.asc())
+    else:
+        sort_map = {
+            'title': Book.title,
+            'created_at': Book.created_at,
+            'updated_at': Book.updated_at,
+            'published_date': Book.published_date,
+            'author': author_sort_subq,
+            'id': Book.id,
+        }
+        sort_col = sort_map.get(book_filter.sort_by or 'id', Book.id)
+        sort_dir = (book_filter.sort_order or 'asc').lower()
+        if sort_dir == 'desc':
+            sttm = select(Book).order_by(sort_col.desc().nulls_last() if book_filter.sort_by == 'author' else sort_col.desc(), Book.id.desc() if sort_col != Book.id else sort_col.desc())
+        else:
+            sttm = select(Book).order_by(sort_col.asc().nulls_last() if book_filter.sort_by == 'author' else sort_col.asc(), Book.id.asc() if sort_col != Book.id else sort_col.asc())
 
     # default: hide inactive books unless explicitly requested
     if book_filter.is_active is None:
@@ -380,7 +652,7 @@ async def list_books(
     else:
         sttm = sttm.where(Book.is_active.is_(book_filter.is_active))
 
-    # Tenant isolation: school users only see books with copies in their school
+    # Tenant isolation: school users see books with copies in their school + livros órfãos (0 cópias) recém-cadastrados
     if user.role != UserRole.SUPER_ADMIN:
         if user.school_id is None:
             raise HTTPException(
@@ -392,6 +664,7 @@ async def list_books(
                 (BookCopy.book_id == Book.id)
                 & (BookCopy.school_id == user.school_id)
             )
+            | ~exists().where(BookCopy.book_id == Book.id)
         )
 
     if book_filter.q:
@@ -408,7 +681,26 @@ async def list_books(
                 & (BookCopy.code == raw)
                 & (BookCopy.school_id == user.school_id)
             )
-        sttm = sttm.where(cond_title | cond_isbn | cond_copy)
+        # busca também por gênero e autor (nome/slug) — só livros cadastrados
+        slug_q = slugify_genre(raw)
+        cond_genre_q = exists(
+            select(1)
+            .select_from(book_genres.join(Genre, Genre.id == book_genres.c.genre_id))
+            .where(
+                (book_genres.c.book_id == Book.id)
+                & ((Genre.name.ilike(f'%{raw}%')) | (Genre.slug == slug_q))
+            )
+        )
+        slug_a_q = slugify_author(raw)
+        cond_author_q = exists(
+            select(1)
+            .select_from(book_authors.join(Author, Author.id == book_authors.c.author_id))
+            .where(
+                (book_authors.c.book_id == Book.id)
+                & ((Author.name.ilike(f'%{raw}%')) | (Author.slug == slug_a_q))
+            )
+        )
+        sttm = sttm.where(cond_title | cond_isbn | cond_copy | cond_genre_q | cond_author_q)
 
     if book_filter.title:
         sttm = sttm.where(Book.title.contains(book_filter.title))
@@ -429,6 +721,43 @@ async def list_books(
             & (BookCopy.code == book_filter.internal_code)
         )
         sttm = sttm.where(copy_filter)
+
+    if book_filter.genre_id is not None:
+        sttm = sttm.where(
+            exists().where(
+                (book_genres.c.book_id == Book.id)
+                & (book_genres.c.genre_id == book_filter.genre_id)
+            )
+        )
+    if book_filter.genre:
+        raw_genre = book_filter.genre.strip()
+        slug = slugify_genre(raw_genre)
+        sttm = sttm.where(
+            exists()
+            .select_from(book_genres.join(Genre, Genre.id == book_genres.c.genre_id))
+            .where(
+                (book_genres.c.book_id == Book.id)
+                & ((Genre.slug == slug) | (Genre.name.ilike(f'%{raw_genre}%')))
+            )
+        )
+    if book_filter.author_id is not None:
+        sttm = sttm.where(
+            exists().where(
+                (book_authors.c.book_id == Book.id)
+                & (book_authors.c.author_id == book_filter.author_id)
+            )
+        )
+    if book_filter.author:
+        raw_author = book_filter.author.strip()
+        slug_a = slugify_author(raw_author)
+        sttm = sttm.where(
+            exists()
+            .select_from(book_authors.join(Author, Author.id == book_authors.c.author_id))
+            .where(
+                (book_authors.c.book_id == Book.id)
+                & ((Author.slug == slug_a) | (Author.name.ilike(f'%{raw_author}%')))
+            )
+        )
 
     items, total, page, size, pages = await paginate(
         session, sttm, book_filter
@@ -466,25 +795,29 @@ async def get_book(
             status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
         )
 
-    # Tenant isolation: school users can only open books with copies in school
+    # Tenant isolation: permite livro órfão (0 cópias) para qualquer escola; se tem cópias, precisa ter na escola do usuário
     if user.role != UserRole.SUPER_ADMIN:
         if user.school_id is None:
             raise HTTPException(
                 status_code=HTTPStatus.FORBIDDEN,
                 detail='User without school cannot access books',
             )
-        in_school = await session.scalar(
-            select(BookCopy.id)
-            .where(
-                (BookCopy.book_id == book.id)
-                & (BookCopy.school_id == user.school_id)
-            )
-            .limit(1)
+        has_any_copy = await session.scalar(
+            select(BookCopy.id).where(BookCopy.book_id == book.id).limit(1)
         )
-        if in_school is None:
-            raise HTTPException(
-                status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
+        if has_any_copy is not None:
+            in_school = await session.scalar(
+                select(BookCopy.id)
+                .where(
+                    (BookCopy.book_id == book.id)
+                    & (BookCopy.school_id == user.school_id)
+                )
+                .limit(1)
             )
+            if in_school is None:
+                raise HTTPException(
+                    status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
+                )
 
     derived = (await _derived_states(session, [book.id], school_scope))[0]
     return {**_book_public(book), 'derived_state': derived}
@@ -540,12 +873,40 @@ async def patch_book(
             status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
         )
 
-    for key, value in book.model_dump(exclude_unset=True).items():
+    data = book.model_dump(exclude_unset=True)
+    genre_ids = data.pop('genre_ids', None)
+    genre_names = data.pop('genre_names', None)
+    author_ids = data.pop('author_ids', None)
+    author_names = data.pop('author_names', None)
+    for key, value in data.items():
         setattr(db_book, key, value)
+
+    # handle genres update if provided
+    if genre_ids is not None or genre_names is not None:
+        if genre_ids == [] and genre_names in (None, []):
+            db_book.genres = []
+        else:
+            new_genres = await _resolve_genres_for_book(
+                session, genre_ids, genre_names
+            )
+            db_book.genres = new_genres
+
+    # handle authors update if provided
+    if author_ids is not None or author_names is not None:
+        if author_ids == [] and author_names in (None, []):
+            db_book.authors = []
+        else:
+            new_authors = await _resolve_authors_for_book(
+                session, author_ids, author_names
+            )
+            db_book.authors = new_authors
 
     db_book.edited_by = user.id
     session.add(db_book)
     await session.commit()
     await session.refresh(db_book)
 
-    return db_book
+    # ensure genres/authors loaded for response
+    await session.refresh(db_book, attribute_names=['genres', 'authors'])
+    derived = (await _derived_states(session, [db_book.id], None if user.role == UserRole.SUPER_ADMIN else user.school_id))[0]
+    return {**_book_public(db_book), 'derived_state': derived}

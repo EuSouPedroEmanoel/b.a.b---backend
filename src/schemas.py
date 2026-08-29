@@ -186,6 +186,34 @@ class UserUpdateSelf(BaseModel):
 
 
 # endregion
+# region - Genre
+class GenrePublic(BaseModel):
+    id: int
+    name: str
+    slug: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GenreCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+# endregion
+# region - Author
+class AuthorPublic(BaseModel):
+    id: int
+    name: str
+    slug: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AuthorCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+# endregion
 # region - School
 class SchoolSchema(BaseModel):
     name: str = Field(min_length=2)
@@ -264,10 +292,24 @@ class FilterBook(FilterPage):
     q: str | None = Field(
         None,
         min_length=1,
-        description='Título, ISBN ou código interno do exemplar',
+        description='Título, ISBN, código interno, gênero ou autor',
     )
     isbn: str | None = None
     internal_code: str | None = None
+    genre_id: int | None = None
+    genre: str | None = Field(
+        default=None, description='Nome ou slug do gênero'
+    )
+    author_id: int | None = None
+    author: str | None = Field(
+        default=None, description='Nome ou slug do autor'
+    )
+    sort_by: Literal['title', 'created_at', 'updated_at', 'published_date', 'author', 'id'] | None = Field(
+        default=None, description='Campo de ordenação'
+    )
+    sort_order: Literal['asc', 'desc'] | None = Field(
+        default=None, description='Direção da ordenação'
+    )
 
 
 class FilterCopy(FilterPage):
@@ -327,6 +369,11 @@ class BooksSchema(BaseModel):
     description: str | None = None
     isbn: str | None = None
     cover_url: str | None = None
+    published_date: date | None = None
+    genre_ids: list[int] | None = None
+    genre_names: list[str] | None = None
+    author_ids: list[int] | None = None
+    author_names: list[str] | None = None
 
     @model_validator(mode='after')
     def validate_identifiers(self):
@@ -343,6 +390,14 @@ class BooksPublic(BooksSchema):
     added_by: int
     edited_by: int | None = None
     derived_state: BooksStates = BooksStates.ARCHIVED
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    genres: list[GenrePublic] = Field(default_factory=list)
+    genre_ids: list[int] = Field(default_factory=list)  # type: ignore[assignment]
+    genre_names: list[str] = Field(default_factory=list)  # type: ignore[assignment]
+    authors: list[AuthorPublic] = Field(default_factory=list)
+    author_ids: list[int] = Field(default_factory=list)  # type: ignore[assignment]
+    author_names: list[str] = Field(default_factory=list)  # type: ignore[assignment]
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -355,6 +410,11 @@ class BookUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
     cover_url: str | None = None
+    published_date: date | None = None
+    genre_ids: list[int] | None = None
+    genre_names: list[str] | None = None
+    author_ids: list[int] | None = None
+    author_names: list[str] | None = None
 
 
 class BookLookupResponse(BaseModel):
@@ -362,6 +422,9 @@ class BookLookupResponse(BaseModel):
     title: str | None = None
     description: str | None = None
     cover_url: str | None = None
+    published_date: date | None = None
+    genres: list[str] = Field(default_factory=list)
+    authors: list[str] = Field(default_factory=list)
     found: bool = False
     already_exists: bool = False
     existing_book_id: int | None = None

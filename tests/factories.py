@@ -34,6 +34,7 @@ class BookFactory(factory.Factory):
     title = factory.Faker('text')
     description = factory.Faker('text')
     isbn = factory.Faker('isbn13')
+    published_date = factory.Faker('date_object')
     added_by = factory.LazyAttribute(
         lambda o: o.user_id if o.user_id is not None else 1
     )

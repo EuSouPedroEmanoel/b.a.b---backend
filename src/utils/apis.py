@@ -24,6 +24,35 @@ async def _fetch_json(url: str, headers: dict | None = None) -> dict | None:
     return response.json()
 
 
+def _parse_published_date(raw: str | None) -> str | None:
+    """Normalize publishedDate variations (YYYY, YYYY-MM, YYYY-MM-DD) to ISO date.
+
+    Returns YYYY-MM-DD string or None. Incomplete dates are padded with 01.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    # Google: 2020, 2020-05, 2020-05-17 ; BrasilAPI: may already be ISO
+    parts = s.split('-')
+    try:
+        if len(parts) == 1 and len(parts[0]) == 4 and parts[0].isdigit():
+            return f'{parts[0]}-01-01'
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            return f'{parts[0]}-{parts[1].zfill(2)}-01'
+        if len(parts) == 3:
+            # validate date
+            from datetime import date
+
+            y, m, d = int(parts[0]), int(parts[1]), int(parts[2][:2])
+            date(y, m, d)
+            return f'{y:04d}-{m:02d}-{d:02d}'
+    except Exception:
+        return None
+    return None
+
+
 async def get_google_book_info(isbn: str) -> dict:
     # 1. Primeira tentativa: Google Books
     google_url = (
@@ -37,6 +66,19 @@ async def get_google_book_info(isbn: str) -> dict:
     if data and data.get('totalItems', 0) > 0:
         info = data['items'][0]['volumeInfo']
         image_links = info.get('imageLinks') or {}
+        categories = info.get('categories') or []
+        # categories may be like ["Fiction / Romance"] -> split by "/"
+        genres: list[str] = []
+        for cat in categories:
+            if isinstance(cat, str):
+                for part in cat.split('/'):
+                    p = part.strip()
+                    if p:
+                        genres.append(p)
+        authors = info.get('authors') or []
+        if not isinstance(authors, list):
+            authors = []
+        authors = [str(a).strip() for a in authors if str(a).strip()]
         return {
             'title': info.get('title'),
             'description': info.get('description'),
@@ -44,6 +86,9 @@ async def get_google_book_info(isbn: str) -> dict:
                 image_links.get('thumbnail')
                 or image_links.get('smallThumbnail')
             ),
+            'published_date': _parse_published_date(info.get('publishedDate')),
+            'genres': genres,
+            'authors': authors,
         }
 
     # 2. Segunda tentativa (Fallback): BrasilAPI para livros nacionais
@@ -52,13 +97,38 @@ async def get_google_book_info(isbn: str) -> dict:
     data = await _fetch_json(brasil_api_url)
 
     if data:
+        # BrasilAPI may have subjects/category - try common keys
+        raw_genres = data.get('subjects') or data.get('categories') or data.get('category')
+        genres2: list[str] = []
+        if isinstance(raw_genres, list):
+            genres2 = [str(g).strip() for g in raw_genres if str(g).strip()]
+        elif isinstance(raw_genres, str) and raw_genres.strip():
+            genres2 = [raw_genres.strip()]
+        raw_authors = data.get('authors') or data.get('author')
+        authors2: list[str] = []
+        if isinstance(raw_authors, list):
+            authors2 = [str(a).strip() for a in raw_authors if str(a).strip()]
+        elif isinstance(raw_authors, str) and raw_authors.strip():
+            authors2 = [raw_authors.strip()]
+        # BrasilAPI uses various keys for publication year/date
+        raw_pub = (
+            data.get('publish_date')
+            or data.get('published_date')
+            or data.get('year')
+            or data.get('date')
+        )
+        if isinstance(raw_pub, int):
+            raw_pub = str(raw_pub)
         return {
             'title': data.get('title'),
             'description': data.get('synopsis'),
             'cover_url': _normalize_cover_url(data.get('cover_url')),
+            'published_date': _parse_published_date(str(raw_pub) if raw_pub else None),
+            'genres': genres2,
+            'authors': authors2,
         }
 
-    return {}
+    return {'genres': [], 'authors': [], 'published_date': None}
 
 
 def _normalize_cover_url(url: str | None) -> str | None:
