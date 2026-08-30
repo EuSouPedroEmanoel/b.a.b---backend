@@ -423,7 +423,7 @@ async def suggest_books(
 
 
 @router.post('/', response_model=BooksPublic, status_code=HTTPStatus.CREATED)
-async def create_book(
+async def create_book(  # noqa: PLR0914
     book: BooksSchema,
     session: Session,
     user: StaffCreateOnly,
@@ -513,7 +513,13 @@ async def create_book(
     await session.refresh(db_book, attribute_names=['genres', 'authors'])
     # new book has no copies -> derived_state ARCHIVED, but compute via helper for consistency  # noqa: E501
     derived = (await _derived_states(session, [db_book.id], None))[0]
-    return {**_book_public(db_book), 'derived_state': derived}
+    total_map, avail_map = await _copies_counts(session, [db_book.id], None)
+    return {
+        **_book_public(db_book),
+        'derived_state': derived,
+        'total_copies': total_map.get(db_book.id, 0),
+        'available_copies': avail_map.get(db_book.id, 0),
+    }
 
 
 @router.post(
@@ -646,6 +652,31 @@ async def _derived_states(
         )
         for bid in book_ids
     ]
+
+
+async def _copies_counts(
+    session: AsyncSession,
+    book_ids: list[int],
+    school_scope: int | None,
+) -> tuple[dict[int, int], dict[int, int]]:
+    if not book_ids:
+        return {}, {}
+    q_total = select(BookCopy.book_id, func.count(BookCopy.id)).where(
+        BookCopy.book_id.in_(book_ids)
+    )
+    q_avail = select(BookCopy.book_id, func.count(BookCopy.id)).where(
+        BookCopy.book_id.in_(book_ids), BookCopy.state == BooksStates.AVAILABLE
+    )
+    if school_scope is not None:
+        q_total = q_total.where(BookCopy.school_id == school_scope)
+        q_avail = q_avail.where(BookCopy.school_id == school_scope)
+    q_total = q_total.group_by(BookCopy.book_id)
+    q_avail = q_avail.group_by(BookCopy.book_id)
+    total_rows = (await session.execute(q_total)).all()
+    avail_rows = (await session.execute(q_avail)).all()
+    total_map = {bid: cnt for bid, cnt in total_rows}
+    avail_map = {bid: cnt for bid, cnt in avail_rows}
+    return total_map, avail_map
 
 
 @router.get('/', response_model=PaginatedResponse[BooksPublic])
@@ -839,14 +870,17 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
         session, sttm, book_filter
     )
 
+    book_ids = [b.id for b in items]
+    derived_list = await _derived_states(session, book_ids, school_scope)
+    total_map, avail_map = await _copies_counts(session, book_ids, school_scope)  # noqa: E501
     result = [
-        {**_book_public(b), 'derived_state': st}
-        for b, st in zip(
-            items,
-            await _derived_states(
-                session, [b.id for b in items], school_scope
-            ),
-        )
+        {
+            **_book_public(b),
+            'derived_state': st,
+            'total_copies': total_map.get(b.id, 0),
+            'available_copies': avail_map.get(b.id, 0),
+        }
+        for b, st in zip(items, derived_list)
     ]
 
     return {
@@ -899,7 +933,13 @@ async def get_book(
                 )
 
     derived = (await _derived_states(session, [book.id], school_scope))[0]
-    return {**_book_public(book), 'derived_state': derived}
+    total_map, avail_map = await _copies_counts(session, [book.id], school_scope)  # noqa: E501
+    return {
+        **_book_public(book),
+        'derived_state': derived,
+        'total_copies': total_map.get(book.id, 0),
+        'available_copies': avail_map.get(book.id, 0),
+    }
 
 
 @router.delete('/{book_id}', response_model=Message)
@@ -994,4 +1034,12 @@ async def patch_book(
             None if user.role == UserRole.SUPER_ADMIN else user.school_id,
         )
     )[0]
-    return {**_book_public(db_book), 'derived_state': derived}
+    total_map, avail_map = await _copies_counts(
+        session, [db_book.id], None if user.role == UserRole.SUPER_ADMIN else user.school_id  # noqa: E501
+    )
+    return {
+        **_book_public(db_book),
+        'derived_state': derived,
+        'total_copies': total_map.get(db_book.id, 0),
+        'available_copies': avail_map.get(db_book.id, 0),
+    }

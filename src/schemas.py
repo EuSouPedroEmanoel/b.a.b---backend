@@ -398,6 +398,8 @@ class BooksPublic(BooksSchema):
     added_by: int
     edited_by: int | None = None
     derived_state: BooksStates = BooksStates.ARCHIVED
+    total_copies: int = 0
+    available_copies: int = 0
     created_at: datetime | None = None
     updated_at: datetime | None = None
     genres: list[GenrePublic] = Field(default_factory=list)

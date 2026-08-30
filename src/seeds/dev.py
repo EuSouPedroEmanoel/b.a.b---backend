@@ -161,11 +161,24 @@ async def seed_books_and_copies(
     users: dict[str, User],  # noqa: E501
     super_admin: User,  # noqa: E501
 ) -> list[Book]:
-    books_data = [  # noqa: E501
-        {'title': 'Livro Dev 1 - 2 copias', 'description': 'Livro com 2 copias (uma por escola)', 'isbn': '978-0-00-000001-1', 'published_date': date(2018, 5, 20)},  # noqa: E501
-        {'title': 'Livro Dev 2 - 1 copia', 'description': 'Livro com 1 copia', 'isbn': '978-0-00-000001-2', 'published_date': date(2020, 8, 15)},  # noqa: E501
-        {'title': 'Livro Dev 3 - 0 copias', 'description': 'Livro sem copias', 'isbn': '978-0-00-000001-3', 'published_date': date(2022, 11, 3)},  # noqa: E501
-    ]
+    # 100 livros, 1-50 com capa (solicitado), 51-100 sem capa
+    books_data = []  # noqa: E501
+    for i in range(1, 101):  # noqa: E501
+        if i == 1:
+            books_data.append({'title': 'Livro Dev 1 - 2 copias', 'description': 'Livro com 2 copias (uma por escola)', 'isbn': '978-0-00-000001-1', 'published_date': date(2018, 5, 20)})
+        elif i == 2:
+            books_data.append({'title': 'Livro Dev 2 - 1 copia', 'description': 'Livro com 1 copia', 'isbn': '978-0-00-000001-2', 'published_date': date(2020, 8, 15)})
+        elif i == 3:
+            books_data.append({'title': 'Livro Dev 3 - com capa', 'description': 'Livro Dev 3 agora com capa (1-50 com capa)', 'isbn': '978-0-00-000001-3', 'published_date': date(2022, 11, 3)})
+        else:
+            has_cover_flag = (i <= 50)  # 1-50 com capa = 50 com capa
+            title = f'Livro Dev {i} - {"com capa" if has_cover_flag else "sem capa"}'
+            books_data.append({
+                'title': title,
+                'description': f'Descrição do livro {i} {"com imagem de capa" if has_cover_flag else "sem imagem"}',
+                'isbn': f'978-0-00-{i:06d}-{(i*7)%10}',
+                'published_date': date(2000 + (i % 24), (i % 12) + 1, (i % 28) + 1),
+            })
     # garante pool de gêneros e autores existe
     for gname in GENRE_POOL:
         await _get_or_create_genre_seed(session, gname)
@@ -176,10 +189,16 @@ async def seed_books_and_copies(
     books: list[Book] = []
     for idx, data in enumerate(books_data):
         existing = await session.scalar(select(Book).where(Book.isbn == data['isbn']))  # noqa: E501
+        should_have_cover = idx < 50  # 1-50 com capa
         if existing:
-            # atualiza capa, gêneros, autores e data de lançamento a cada seed (mesmo se já existe)
-            tpl = random.choice(COVER_POOL)
-            existing.cover_url = tpl.format(seed=f"{existing.isbn}-{random.randint(1,9999)}", isbn=existing.isbn.replace('-', ''), rand=random.randint(1, 1_000_000))
+            # atualiza capa, título, gêneros, autores e data de lançamento a cada seed (mesmo se já existe)
+            existing.title = data['title']
+            existing.description = data['description']
+            if not should_have_cover:
+                existing.cover_url = None
+            else:
+                # dummyimage é estável via wsrv (200)
+                existing.cover_url = f"https://dummyimage.com/400x600/0f4c75/ffffff&text=Livro+{idx+1:03d}"
             if data.get('published_date'):
                 existing.published_date = data['published_date']
             # gêneros aleatórios 1-3
@@ -204,8 +223,11 @@ async def seed_books_and_copies(
             print(f"Book {existing.isbn} updated cover/genres/authors/published_date (id={existing.id}, genres={[g.name for g in genres]}, authors={[a.name for a in authors]}, published_date={existing.published_date})")
             books.append(existing)
             continue
-        tpl = random.choice(COVER_POOL)
-        cover_url = tpl.format(seed=f"{data['isbn']}-{random.randint(1,9999)}", isbn=data['isbn'].replace('-', ''), rand=random.randint(1, 1_000_000))
+        should_have_cover_new = idx < 50  # 1-50 com capa
+        if not should_have_cover_new:
+            cover_url = None
+        else:
+            cover_url = f"https://dummyimage.com/400x600/0f4c75/ffffff&text=Livro+{idx+1:03d}"
         k = random.randint(1, 3)
         chosen = random.sample(GENRE_POOL, k=k)
         genres = []
@@ -236,18 +258,24 @@ async def seed_books_and_copies(
     for b in books:
         await session.refresh(b, attribute_names=['genres', 'authors'])
 
-    # copies: B1 2 copies (one per school), B2 1 copy (school 1), B3 0
-    # use librarian of each school as added_by
+    # copies: 1-50 com capa têm cópias, 51-100 sem capa 0 cópias; mantém B1 2 cópias e B2 1 cópia
     copies_spec = []
     if len(schools) >= 2 and len(books) >= 3:  # noqa: PLR2004
         lib1 = users.get('librarian_dev1')
         lib2 = users.get('librarian_dev2')
-        # B1
+        # B1 2 cópias preservado
         copies_spec.append((books[0].id, 'EX-DEV-001', schools[0].id, lib1.id if lib1 else super_admin.id))  # noqa: E501
         copies_spec.append((books[0].id, 'EX-DEV-001', schools[1].id, lib2.id if lib2 else super_admin.id))  # noqa: E501
-        # B2
+        # B2 1 cópia preservado
         copies_spec.append((books[1].id, 'EX-DEV-002', schools[0].id, lib1.id if lib1 else super_admin.id))  # noqa: E501
-        # B3 0 copies
+        # B3 agora com capa → 1 cópia (1-50 com capa)
+        copies_spec.append((books[2].id, 'EX-DEV-003', schools[0].id, lib1.id if lib1 else super_admin.id))  # noqa: E501
+        # demais 4..50: com capa → 1 cópia na escola 1, 51-100 sem capa → 0
+        for idx, b in enumerate(books[3:], start=4):
+            should_have_cover_extra = idx <= 50
+            if should_have_cover_extra:
+                code = f'EX-DEV-{idx:03d}'
+                copies_spec.append((b.id, code, schools[0].id, lib1.id if lib1 else super_admin.id))  # noqa: E501
 
     for book_id, code, school_id, added_by in copies_spec:
         existing = await session.scalar(
