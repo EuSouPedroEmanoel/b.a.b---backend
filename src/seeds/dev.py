@@ -5,7 +5,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from src.models import Author, Book, BookCopy, Genre, School, User, UserRole
+from src.models import Author, Book, BookCopy, BooksStates, Genre, School, User, UserRole
 from src.security import get_password_hash
 from src.settings import Settings
 from src.utils.authors import display_name_author, slugify_author
@@ -258,41 +258,59 @@ async def seed_books_and_copies(
     for b in books:
         await session.refresh(b, attribute_names=['genres', 'authors'])
 
-    # copies: 1-50 com capa têm cópias, 51-100 sem capa 0 cópias; mantém B1 2 cópias e B2 1 cópia
-    copies_spec = []
+    # copies: alternado entre as 5 disponibilidades (AVAILABLE, BORROWED, RESERVED, LOST, ARCHIVED)
+    # ciclo 5: idx 1→ AVAILABLE, 2→ BORROWED, 3→ RESERVED, 4→ LOST, 5→ ARCHIVED, 6→ AVAILABLE...
+    # ARCHIVED = 0 cópias (livro sem exemplar), demais = 1 cópia com o estado do ciclo
+    copies_spec: list[tuple[int, str, int, int, BooksStates]] = []
     if len(schools) >= 2 and len(books) >= 3:  # noqa: PLR2004
         lib1 = users.get('librarian_dev1')
         lib2 = users.get('librarian_dev2')
-        # B1 2 cópias preservado
-        copies_spec.append((books[0].id, 'EX-DEV-001', schools[0].id, lib1.id if lib1 else super_admin.id))  # noqa: E501
-        copies_spec.append((books[0].id, 'EX-DEV-001', schools[1].id, lib2.id if lib2 else super_admin.id))  # noqa: E501
-        # B2 1 cópia preservado
-        copies_spec.append((books[1].id, 'EX-DEV-002', schools[0].id, lib1.id if lib1 else super_admin.id))  # noqa: E501
-        # B3 agora com capa → 1 cópia (1-50 com capa)
-        copies_spec.append((books[2].id, 'EX-DEV-003', schools[0].id, lib1.id if lib1 else super_admin.id))  # noqa: E501
-        # demais 4..50: com capa → 1 cópia na escola 1, 51-100 sem capa → 0
-        for idx, b in enumerate(books[3:], start=4):
-            should_have_cover_extra = idx <= 50
-            if should_have_cover_extra:
-                code = f'EX-DEV-{idx:03d}'
-                copies_spec.append((b.id, code, schools[0].id, lib1.id if lib1 else super_admin.id))  # noqa: E501
+        cycle5 = [BooksStates.AVAILABLE, BooksStates.BORROWED, BooksStates.RESERVED, BooksStates.LOST, BooksStates.ARCHIVED]
+        for idx, b in enumerate(books, start=1):
+            state = cycle5[(idx - 1) % len(cycle5)]
+            if state == BooksStates.ARCHIVED:
+                # sem cópia → derivado ARCHIVED
+                continue
+            code = f'EX-DEV-{idx:03d}'
+            # idx 1 tem cópia nas 2 escolas para manter exemplo multi-tenant
+            if idx == 1:
+                copies_spec.append((b.id, code, schools[0].id, lib1.id if lib1 else super_admin.id, state))  # noqa: E501
+                copies_spec.append((b.id, code, schools[1].id, lib2.id if lib2 else super_admin.id, state))  # noqa: E501
+            else:
+                copies_spec.append((b.id, code, schools[0].id, lib1.id if lib1 else super_admin.id, state))  # noqa: E501
 
-    for book_id, code, school_id, added_by in copies_spec:
+    # remove cópias de livros que passaram a ser ARCHIVED no ciclo alternado
+    for idx, b in enumerate(books, start=1):
+        if cycle5[(idx - 1) % len(cycle5)] == BooksStates.ARCHIVED:
+            existing_list = (await session.scalars(select(BookCopy).where(BookCopy.book_id == b.id))).all()
+            for ec in existing_list:
+                await session.delete(ec)
+                print(f"Copy {ec.code} for book {b.id} removed (ARCHIVED alternado)")
+    await session.flush()
+
+    for book_id, code, school_id, added_by, state in copies_spec:
         existing = await session.scalar(
             select(BookCopy).where(BookCopy.school_id == school_id, BookCopy.code == code)
         )
         if existing:
-            print(f"Copy {code} at school {school_id} already exists (id={existing.id})")
+            if existing.state != state:
+                existing.state = state
+                session.add(existing)
+                await session.flush()
+                print(f"Copy {code} at school {school_id} updated state to {state.value} (id={existing.id})")
+            else:
+                print(f"Copy {code} at school {school_id} already exists (id={existing.id})")
             continue
         copy = BookCopy(
             code=code,
             book_id=book_id,
             added_by=added_by,
             school_id=school_id,
+            state=state,
         )
         session.add(copy)
         await session.flush()
-        print(f"Copy {code} for book {book_id} at school {school_id} created (id={copy.id})")
+        print(f"Copy {code} for book {book_id} at school {school_id} created (id={copy.id}, state={state.value})")
     await session.commit()
     return books
 

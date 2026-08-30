@@ -14,6 +14,8 @@ from src.models import (
     BookCopy,
     BooksStates,
     Genre,
+    Loan,
+    LoanStatus,
     User,
     UserRole,
     book_authors,
@@ -627,7 +629,10 @@ async def _derived_states(
     book_ids: list[int],
     school_scope: int | None,
 ) -> list[BooksStates]:
-    """Derived states for each book_id, scoped to a school (in order)."""
+    """Derived states for each book_id, scoped to a school (in order).
+
+    Prioridade: AVAILABLE > RESERVED > BORROWED > LOST > ARCHIVED
+    """
     if not book_ids:
         return []
     q = select(BookCopy.book_id, BookCopy.state).where(
@@ -636,22 +641,25 @@ async def _derived_states(
     if school_scope is not None:
         q = q.where(BookCopy.school_id == school_scope)
     rows = (await session.execute(q)).all()
-    has_available: dict[int, bool] = {}
+    states_by_book: dict[int, set[BooksStates]] = {}
     for bid, st in rows:
-        if st == BooksStates.AVAILABLE:
-            has_available[bid] = True
+        states_by_book.setdefault(bid, set()).add(st)
+    result: list[BooksStates] = []
+    for bid in book_ids:
+        states = states_by_book.get(bid)
+        if not states:
+            result.append(BooksStates.ARCHIVED)
+        elif BooksStates.AVAILABLE in states:
+            result.append(BooksStates.AVAILABLE)
+        elif BooksStates.RESERVED in states:
+            result.append(BooksStates.RESERVED)
+        elif BooksStates.BORROWED in states:
+            result.append(BooksStates.BORROWED)
+        elif BooksStates.LOST in states:
+            result.append(BooksStates.LOST)
         else:
-            has_available.setdefault(bid, False)
-    return [
-        (
-            BooksStates.AVAILABLE
-            if has_available.get(bid)
-            else BooksStates.BORROWED
-            if bid in has_available
-            else BooksStates.ARCHIVED
-        )
-        for bid in book_ids
-    ]
+            result.append(BooksStates.ARCHIVED)
+    return result
 
 
 async def _copies_counts(
@@ -805,9 +813,37 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
     if book_filter.description:
         sttm = sttm.where(Book.description.contains(book_filter.description))
     if book_filter.state:
+        # RBAC: aluno só pode filtrar por disponíveis e emprestados
+        if user.role == UserRole.STUDENT and book_filter.state not in {
+            BooksStates.AVAILABLE,
+            BooksStates.BORROWED,
+        }:
+            raise HTTPException(
+                status_code=HTTPStatus.FORBIDDEN,
+                detail='Alunos só podem filtrar por disponíveis e emprestados',
+            )
         sttm = sttm.where(
             Book.derived_state_expr(school_scope) == book_filter.state
         )
+        # aluno filtra por emprestados -> só os dele (loan ativo)
+        if (
+            user.role == UserRole.STUDENT
+            and book_filter.state == BooksStates.BORROWED
+        ):
+            sttm = sttm.where(
+                exists(
+                    select(1)
+                    .select_from(Loan)
+                    .join(BookCopy, BookCopy.id == Loan.copy_id)
+                    .where(
+                        BookCopy.book_id == Book.id,
+                        Loan.user_id == user.id,
+                        Loan.status.in_(
+                            [LoanStatus.ACTIVE, LoanStatus.OVERDUE]
+                        ),
+                    )
+                )
+            )
     if book_filter.isbn:
         clean_isbn = book_filter.isbn.replace('-', '').replace(' ', '')
         sttm = sttm.where(

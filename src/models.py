@@ -299,8 +299,7 @@ class Book:
     def derived_state_expr(school_id: int | None = None):
         """SQL expression for the derived state, scoped to a school.
 
-        Priority borrowed > available: available if any copy is available;
-        borrowed if there are copies but none available; archived if no copies.
+        Prioridade: AVAILABLE > RESERVED > BORROWED > LOST > ARCHIVED.
         """
         cond = [BookCopy.book_id == Book.id]
         if school_id is not None:
@@ -311,15 +310,29 @@ class Book:
             .correlate(Book)
             .scalar_subquery()
         )
-        other = (
+        reserved = (
             select(func.count(BookCopy.id))
-            .where(*cond, BookCopy.state != BooksStates.AVAILABLE)
+            .where(*cond, BookCopy.state == BooksStates.RESERVED)
+            .correlate(Book)
+            .scalar_subquery()
+        )
+        borrowed = (
+            select(func.count(BookCopy.id))
+            .where(*cond, BookCopy.state == BooksStates.BORROWED)
+            .correlate(Book)
+            .scalar_subquery()
+        )
+        lost = (
+            select(func.count(BookCopy.id))
+            .where(*cond, BookCopy.state == BooksStates.LOST)
             .correlate(Book)
             .scalar_subquery()
         )
         return case(
             (avail > 0, BooksStates.AVAILABLE),
-            (other > 0, BooksStates.BORROWED),
+            (reserved > 0, BooksStates.RESERVED),
+            (borrowed > 0, BooksStates.BORROWED),
+            (lost > 0, BooksStates.LOST),
             else_=BooksStates.ARCHIVED,
         )
 
@@ -327,9 +340,16 @@ class Book:
     def derived_state(self) -> BooksStates:  # pragma: no cover
         if not self.copies:  # pragma: no cover
             return BooksStates.ARCHIVED  # pragma: no cover
-        if any(c.state == BooksStates.AVAILABLE for c in self.copies):  # pragma: no cover  # noqa: E501
+        states = {c.state for c in self.copies}  # pragma: no cover
+        if BooksStates.AVAILABLE in states:  # pragma: no cover
             return BooksStates.AVAILABLE  # pragma: no cover
-        return BooksStates.BORROWED  # pragma: no cover
+        if BooksStates.RESERVED in states:  # pragma: no cover
+            return BooksStates.RESERVED  # pragma: no cover
+        if BooksStates.BORROWED in states:  # pragma: no cover
+            return BooksStates.BORROWED  # pragma: no cover
+        if BooksStates.LOST in states:  # pragma: no cover
+            return BooksStates.LOST  # pragma: no cover
+        return BooksStates.ARCHIVED  # pragma: no cover
 
 
 @table_registry.mapped_as_dataclass()

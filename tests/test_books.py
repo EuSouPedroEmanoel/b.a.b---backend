@@ -24,7 +24,7 @@ def _expected_books_json(books, derived_state='available'):
         if derived_state == 'available':
             item['total_copies'] = 1
             item['available_copies'] = 1
-        elif derived_state == 'borrowed':
+        elif derived_state in {'borrowed', 'reserved', 'lost'}:
             item['total_copies'] = 1
             item['available_copies'] = 0
         else:
