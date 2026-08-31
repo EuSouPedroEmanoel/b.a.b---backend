@@ -945,42 +945,28 @@ def _diversify_books(  # pragma: no cover
     if len(books) <= max_consecutive:
         return books
     result: list[Book] = []
-    # track first author id to detect streak
-    for b in books:
-        # check if adding b would create streak > max_consecutive
-        if len(result) >= max_consecutive:
+    remaining = books[:]
+    while remaining:
+        pick_idx = None
+        for idx, cand in enumerate(remaining):
+            if len(result) < max_consecutive:
+                pick_idx = idx
+                break
             last_authors = [
                 (r.authors[0].id if r.authors else None)
                 for r in result[-max_consecutive:]
             ]
-            cur_author = b.authors[0].id if b.authors else None
-            # if last N have same author as cur_author
-            if (
+            cur_author = cand.authors[0].id if cand.authors else None
+            if not (
                 cur_author is not None
                 and len(set(last_authors)) == 1
                 and last_authors[0] == cur_author
             ):
-                # try to find next book with different author to swap
-                swap_idx = None
-                for idx in range(books.index(b) + 1, len(books)):
-                    cand = books[idx]
-                    cand_author = (
-                        cand.authors[0].id if cand.authors else None
-                    )
-                    if cand_author != cur_author:
-                        swap_idx = idx
-                        break
-                if swap_idx is not None:
-                    # swap b with candidate
-                    books[books.index(b)], books[swap_idx] = (
-                        books[swap_idx],
-                        books[books.index(b)],
-                    )
-                    b = books[books.index(b)]  # now different author
-                else:
-                    # no swap possible, keep as is
-                    pass
-        result.append(b)
+                pick_idx = idx
+                break
+        if pick_idx is None:
+            pick_idx = 0
+        result.append(remaining.pop(pick_idx))
     return result
 
 

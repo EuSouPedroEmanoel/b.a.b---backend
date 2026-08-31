@@ -316,6 +316,85 @@ async def seed_copies_rec(session: AsyncSession, books: list[Book], schools: lis
     return copies
 
 
+GENRE_POOL_DIVERSE = [
+    "Ficção", "Romance", "Técnico", "Fantasia", "Mistério", "Suspense",
+    "Biografia", "História", "Ciência", "Aventura", "Poesia", "Filosofia",
+    "Arte", "Infantil", "Clássico", "Humor",
+]
+AUTHOR_POOL_DIVERSE = [
+    "Machado de Assis", "Clarice Lispector", "Jorge Amado", "Cecília Meireles",
+    "Carlos Drummond", "Monteiro Lobato", "Lygia Fagundes", "João Guimarães",
+    "Paulo Coelho", "Conceição Evaristo", "Graciliano Ramos", "Rachel de Queiroz",
+]
+
+
+async def seed_diversified_books(session: AsyncSession, schools: list[School], users: dict[str, User], super_admin: User):
+    """Cria livros extras para diversificar acervos:
+    - SCH-REC-01: alta diversificação (12 livros com 2-3 gêneros/1-2 autores aleatórios)
+    - SCH-REC-02/03: baixa diversificação (3 livros cada, 1 gênero/1 autor)
+    Esses livros têm cópia APENAS na escola de origem, criando acervos heterogêneos.
+    """
+    random.seed(42)
+    # mapa escola -> librarian
+    lib_by_school = {}
+    for s in schools:
+        lib = next((u for u in users.values() if u.role == UserRole.LIBRARIAN and u.school_id == s.id), None)
+        lib_by_school[s.id] = lib or super_admin
+
+    # config por escola: quantos livros extras e quantos gêneros/autores
+    config = {
+        "SCH-REC-01": {"count": 12, "genres": (2, 3), "authors": (1, 2)},  # alta
+        "SCH-REC-02": {"count": 3, "genres": (1, 1), "authors": (1, 1)},   # baixa
+        "SCH-REC-03": {"count": 3, "genres": (1, 1), "authors": (1, 1)},   # baixa
+    }
+    for school in schools:
+        cfg = config.get(school.code)
+        if not cfg:
+            continue
+        for i in range(1, cfg["count"] + 1):
+            isbn = f"978-1-REC-DIV-{school.code[-2:]}-{i:02d}-{random.randint(0,9)}"
+            clean_isbn = isbn.replace("-", "").replace(" ", "")
+            existing = await session.scalar(select(Book).where(Book.isbn == clean_isbn))
+            if existing:
+                # garante cópia só na escola
+                code = f"EX-DIV-{school.code[-2:]}-{i:02d}"
+                existing_copy = await session.scalar(select(BookCopy).where(BookCopy.school_id == school.id, BookCopy.code == code))
+                if not existing_copy:
+                    lib = lib_by_school[school.id]
+                    cp = BookCopy(code=code, book_id=existing.id, added_by=lib.id, school_id=school.id, state=BooksStates.AVAILABLE)
+                    session.add(cp)
+                    await session.flush()
+                    print(f"Copy diversificada {code} escola {school.code} (livro {existing.id})")
+                continue
+            # gêneros/autores aleatórios conforme config
+            k = random.randint(*cfg["genres"])
+            chosen_g = random.sample(GENRE_POOL_DIVERSE, k=k)
+            genres = [await _get_or_create_genre(session, g) for g in chosen_g]
+            ak = random.randint(*cfg["authors"])
+            chosen_a = random.sample(AUTHOR_POOL_DIVERSE, k=ak)
+            authors = [await _get_or_create_author(session, a) for a in chosen_a]
+            title = f"REC-DIV {school.code[-2:]}-{i:02d} - {'/'.join(chosen_g[:2])} - {chosen_a[0].split()[-1]}"
+            book = Book(
+                title=title,
+                description=f"Livro diversificado {school.code} - gêneros {', '.join(chosen_g)} - autores {', '.join(chosen_a)}",
+                isbn=clean_isbn,
+                cover_url=f"https://dummyimage.com/400x600/1e3a5f/ffffff&text=DIV+{school.code[-2:]}-{i:02d}",
+                published_date=date(2018 + (i % 8), (i % 12) + 1, (i % 28) + 1),
+                added_by=super_admin.id,
+            )
+            book.genres = genres
+            book.authors = authors
+            session.add(book)
+            await session.flush()
+            code = f"EX-DIV-{school.code[-2:]}-{i:02d}"
+            lib = lib_by_school[school.id]
+            cp = BookCopy(code=code, book_id=book.id, added_by=lib.id, school_id=school.id, state=BooksStates.AVAILABLE)
+            session.add(cp)
+            await session.flush()
+            print(f"Livro diversificado '{title}' (id={book.id}, {len(genres)} gêneros, {len(authors)} autores) + cópia {code} escola {school.code}")
+    await session.commit()
+
+
 async def _create_loan(session: AsyncSession, copy: BookCopy, borrower: User, days_ago: int, duration_days: int = 14, status: LoanStatus = LoanStatus.ACTIVE):
     now = datetime.now(timezone.utc)
     borrowed_at = now - timedelta(days=days_ago)
@@ -475,7 +554,10 @@ async def seed_recommendations(reset: bool = False):
                 schools.append(existing)
         books = await seed_books_rec(session, super_admin)
         await seed_copies_rec(session, books, schools, users, super_admin)
-        await seed_loans_rec(session, books, schools, users)
+        await seed_diversified_books(session, schools, users, super_admin)
+        # recarrega books para incluir diversificados nos loans
+        all_books = (await session.scalars(select(Book).where(Book.isbn.like("9781REC%")))).all()
+        await seed_loans_rec(session, all_books, schools, users)
 
     await engine.dispose()
     print("RECOMMENDATIONS seed completed")
