@@ -292,7 +292,7 @@ class FilterBook(FilterPage):
     q: str | None = Field(
         None,
         min_length=1,
-        description='Título, ISBN, código interno, gênero ou autor',
+        description='Título, ISBN, código interno, gênero, autor ou disponibilidade',
     )
     isbn: str | None = None
     internal_code: str | None = None

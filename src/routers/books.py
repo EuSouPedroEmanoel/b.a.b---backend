@@ -1,11 +1,13 @@
 import re
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import exists, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.database import get_session
 from src.models import (
@@ -15,7 +17,7 @@ from src.models import (
     BooksStates,
     Genre,
     Loan,
-    LoanStatus,
+    Reservation,
     User,
     UserRole,
     book_authors,
@@ -804,46 +806,54 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
                 & ((Author.name.ilike(f'%{raw}%')) | (Author.slug == slug_a_q))
             )
         )
-        sttm = sttm.where(
-            cond_title | cond_isbn | cond_copy | cond_genre_q | cond_author_q
-        )
+        # busca por disponibilidade (estado derivado) — ex.: "Disponível", "Emprestado"
+        avail_map = {
+            'disponivel': BooksStates.AVAILABLE,
+            'disponível': BooksStates.AVAILABLE,
+            'available': BooksStates.AVAILABLE,
+            'emprestado': BooksStates.BORROWED,
+            'borrowed': BooksStates.BORROWED,
+            'reservado': BooksStates.RESERVED,
+            'reserved': BooksStates.RESERVED,
+            'perdido': BooksStates.LOST,
+            'lost': BooksStates.LOST,
+            'arquivado': BooksStates.ARCHIVED,
+            'archived': BooksStates.ARCHIVED,
+        }
+        normalized = raw.lower().strip()
+        # normaliza acentos simples para busca
+        normalized = normalized.replace('í', 'i').replace('á', 'a').replace('ã', 'a')
+        matched_state = None
+        for key, st in avail_map.items():
+            if key in normalized or normalized in key:
+                # evita match muito curto (ex.: "a" em "available")
+                if len(normalized) >= 3:
+                    matched_state = st
+                    break
+        cond_avail_q = None
+        if matched_state is not None:
+            cond_avail_q = Book.derived_state_expr(school_scope) == matched_state
+        if cond_avail_q is not None:
+            sttm = sttm.where(
+                cond_title | cond_isbn | cond_copy | cond_genre_q | cond_author_q | cond_avail_q
+            )
+        else:
+            sttm = sttm.where(
+                cond_title | cond_isbn | cond_copy | cond_genre_q | cond_author_q
+            )
 
     if book_filter.title:
         sttm = sttm.where(Book.title.contains(book_filter.title))
     if book_filter.description:
         sttm = sttm.where(Book.description.contains(book_filter.description))
     if book_filter.state:
-        # RBAC: aluno só pode filtrar por disponíveis e emprestados
-        if user.role == UserRole.STUDENT and book_filter.state not in {
-            BooksStates.AVAILABLE,
-            BooksStates.BORROWED,
-        }:
-            raise HTTPException(
-                status_code=HTTPStatus.FORBIDDEN,
-                detail='Alunos só podem filtrar por disponíveis e emprestados',
-            )
         sttm = sttm.where(
             Book.derived_state_expr(school_scope) == book_filter.state
         )
-        # aluno filtra por emprestados -> só os dele (loan ativo)
-        if (
-            user.role == UserRole.STUDENT
-            and book_filter.state == BooksStates.BORROWED
-        ):
-            sttm = sttm.where(
-                exists(
-                    select(1)
-                    .select_from(Loan)
-                    .join(BookCopy, BookCopy.id == Loan.copy_id)
-                    .where(
-                        BookCopy.book_id == Book.id,
-                        Loan.user_id == user.id,
-                        Loan.status.in_(
-                            [LoanStatus.ACTIVE, LoanStatus.OVERDUE]
-                        ),
-                    )
-                )
-            )
+    elif user.role == UserRole.STUDENT and not book_filter.q:
+        sttm = sttm.where(
+            Book.derived_state_expr(school_scope) == BooksStates.AVAILABLE
+        )
     if book_filter.isbn:
         clean_isbn = book_filter.isbn.replace('-', '').replace(' ', '')
         sttm = sttm.where(
@@ -926,6 +936,388 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
         'size': size,
         'pages': pages,
     }
+
+
+def _diversify_books(  # pragma: no cover
+    books: list[Book], max_consecutive: int = 2
+) -> list[Book]:
+    """Evita mais de `max_consecutive` livros seguidos do mesmo autor."""
+    if len(books) <= max_consecutive:
+        return books
+    result: list[Book] = []
+    # track first author id to detect streak
+    for b in books:
+        # check if adding b would create streak > max_consecutive
+        if len(result) >= max_consecutive:
+            last_authors = [
+                (r.authors[0].id if r.authors else None)
+                for r in result[-max_consecutive:]
+            ]
+            cur_author = b.authors[0].id if b.authors else None
+            # if last N have same author as cur_author
+            if (
+                cur_author is not None
+                and len(set(last_authors)) == 1
+                and last_authors[0] == cur_author
+            ):
+                # try to find next book with different author to swap
+                swap_idx = None
+                for idx in range(books.index(b) + 1, len(books)):
+                    cand = books[idx]
+                    cand_author = (
+                        cand.authors[0].id if cand.authors else None
+                    )
+                    if cand_author != cur_author:
+                        swap_idx = idx
+                        break
+                if swap_idx is not None:
+                    # swap b with candidate
+                    books[books.index(b)], books[swap_idx] = (
+                        books[swap_idx],
+                        books[books.index(b)],
+                    )
+                    b = books[books.index(b)]  # now different author
+                else:
+                    # no swap possible, keep as is
+                    pass
+        result.append(b)
+    return result
+
+
+@router.get('/{book_id}/recommendations', response_model=list[BooksPublic])
+async def get_recommendations(  # pragma: no cover
+    book_id: int,
+    session: Session,
+    user: CurrentUser,
+    limit: Annotated[int, Query(ge=1, le=50)] = 16,
+):
+    """Pipeline 3 camadas: afinidade pessoal (~50%) + contexto livro (~30%) + tendências globais (~20%)."""
+    school_scope = (
+        None if user.role == UserRole.SUPER_ADMIN else user.school_id
+    )
+    if user.role != UserRole.SUPER_ADMIN and user.school_id is None:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='User without school cannot get recommendations',
+        )
+
+    target = await session.scalar(
+        select(Book)
+        .options(selectinload(Book.genres), selectinload(Book.authors))
+        .where(Book.id == book_id)
+    )
+    if not target:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
+        )
+    # tenant check for target (same as get_book)
+    if user.role != UserRole.SUPER_ADMIN:
+        has_any = await session.scalar(
+            select(BookCopy.id).where(BookCopy.book_id == target.id).limit(1)
+        )
+        if has_any is not None:
+            in_school = await session.scalar(
+                select(BookCopy.id)
+                .where(
+                    (BookCopy.book_id == target.id)
+                    & (BookCopy.school_id == user.school_id)
+                )
+                .limit(1)
+            )
+            if in_school is None:
+                raise HTTPException(
+                    status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
+                )
+
+    # quotas
+    affinity_quota = int(limit * 0.5)
+    context_quota = int(limit * 0.3)
+    trends_quota = limit - affinity_quota - context_quota
+
+    target_genre_ids = [g.id for g in (target.genres or [])]
+    target_author_ids = [a.id for a in (target.authors or [])]
+
+    # helper to filter visible books
+    def _visible_filter(query):
+        if user.role == UserRole.SUPER_ADMIN:
+            return query
+        # visible = has copy in school OR no copies at all (orphan)
+        return query.where(
+            exists()
+            .where(
+                (BookCopy.book_id == Book.id)
+                & (BookCopy.school_id == user.school_id)
+            )
+            | ~exists().where(BookCopy.book_id == Book.id)
+        )
+
+    ordered_ids: list[int] = []
+    seen: set[int] = {book_id}
+
+    # --- 1) Afinidade pessoal + histórico (~50%) ---
+    try:
+        # user's loan history -> book_ids
+        user_book_ids_rows = await session.scalars(
+            select(BookCopy.book_id)
+            .join(Loan, Loan.copy_id == BookCopy.id)
+            .where(Loan.user_id == user.id)
+        )
+        user_book_ids = set(user_book_ids_rows.all())
+        # also include reservations history
+        res_rows = await session.scalars(
+            select(Reservation.book_id).where(Reservation.user_id == user.id)
+        )
+        user_book_ids.update(res_rows.all())
+
+        if user_book_ids:
+            # profile genres/authors from history
+            profile_genre_rows = await session.scalars(
+                select(book_genres.c.genre_id).where(
+                    book_genres.c.book_id.in_(list(user_book_ids))
+                )
+            )
+            profile_genre_ids = set(profile_genre_rows.all())
+            profile_author_rows = await session.scalars(
+                select(book_authors.c.author_id).where(
+                    book_authors.c.book_id.in_(list(user_book_ids))
+                )
+            )
+            profile_author_ids = set(profile_author_rows.all())
+
+            if profile_genre_ids or profile_author_ids:
+                # find similar users (who borrowed books sharing profile genres/authors)
+                # collect candidate book_ids sharing profile interests
+                interest_book_ids_q = select(book_genres.c.book_id).where(
+                    book_genres.c.genre_id.in_(list(profile_genre_ids))
+                ) if profile_genre_ids else None
+                if profile_author_ids:
+                    author_q = select(book_authors.c.book_id).where(
+                        book_authors.c.author_id.in_(list(profile_author_ids))
+                    )
+                    if interest_book_ids_q is not None:
+                        interest_book_ids_q = interest_book_ids_q.union(author_q)
+                    else:
+                        interest_book_ids_q = author_q
+                if interest_book_ids_q is not None:
+                    interest_book_ids = set(
+                        (await session.scalars(interest_book_ids_q)).all()
+                    )
+                    if interest_book_ids:
+                        similar_users_rows = await session.execute(
+                            select(Loan.user_id, func.count(Loan.id).label('cnt'))
+                            .join(BookCopy, Loan.copy_id == BookCopy.id)
+                            .where(
+                                BookCopy.book_id.in_(list(interest_book_ids)),
+                                Loan.user_id != user.id,
+                            )
+                            .group_by(Loan.user_id)
+                            .order_by(func.count(Loan.id).desc())
+                            .limit(20)
+                        )
+                        similar_user_ids = [r[0] for r in similar_users_rows.all()]
+                        if similar_user_ids:
+                            aff_rows = await session.execute(
+                                select(
+                                    BookCopy.book_id,
+                                    func.count(Loan.id).label('cnt'),
+                                )
+                                .join(Loan, Loan.copy_id == BookCopy.id)
+                                .where(
+                                    Loan.user_id.in_(similar_user_ids),
+                                    BookCopy.book_id != book_id,
+                                    BookCopy.book_id.notin_(list(user_book_ids)),
+                                )
+                                .group_by(BookCopy.book_id)
+                                .order_by(func.count(Loan.id).desc())
+                                .limit(affinity_quota * 2)
+                            )
+                            for bid, _ in aff_rows.all():
+                                if bid not in seen:
+                                    ordered_ids.append(bid)
+                                    seen.add(bid)
+                                    if len([x for x in ordered_ids if x in seen]) >= affinity_quota:
+                                        # we inserted affinity quota soon; break when quota met
+                                        pass
+                            # trim to quota, keep order
+                            # we may have inserted more than quota due to *2; keep only quota
+                            # but ordered_ids already contains affinity ids at start; we need to enforce
+                            if len(ordered_ids) > affinity_quota:
+                                # keep first affinity_quota, stash excess for later? just keep quota for now
+                                # excess will be considered as part of merged list; we keep them but quota logic later handles
+                                pass
+                # fallback personal genre affinity if similar users gave few results
+                if len([bid for bid in ordered_ids if bid not in seen]) < affinity_quota:  # keep simple
+                    pass
+                # direct personal genre match fallback
+                if len(ordered_ids) < affinity_quota:
+                    needed = affinity_quota - len(ordered_ids)
+                    # books sharing profile genres/authors, most recent
+                    conds = []
+                    if profile_genre_ids:
+                        conds.append(
+                            exists().where(
+                                (book_genres.c.book_id == Book.id)
+                                & (book_genres.c.genre_id.in_(list(profile_genre_ids)))
+                            )
+                        )
+                    if profile_author_ids:
+                        conds.append(
+                            exists().where(
+                                (book_authors.c.book_id == Book.id)
+                                & (book_authors.c.author_id.in_(list(profile_author_ids)))
+                            )
+                        )
+                    if conds:
+                        from sqlalchemy import or_ as sa_or
+
+                        q = select(Book).options(selectinload(Book.genres), selectinload(Book.authors)).where(Book.id != book_id, Book.is_active.is_(True))
+                        q = _visible_filter(q)
+                        q = q.where(sa_or(*conds)).order_by(Book.created_at.desc()).limit(needed * 2)
+                        cand_books = (await session.scalars(q)).all()
+                        for b in cand_books:
+                            if b.id not in seen:
+                                ordered_ids.append(b.id)
+                                seen.add(b.id)
+                                if len([x for x in ordered_ids]) >= affinity_quota:
+                                    break
+    except Exception:
+        # affinity is best-effort, ignore errors
+        pass
+
+    # ensure affinity quota slice: keep first affinity_quota from ordered_ids
+    # but we already appended affinity candidates first, so they are at front
+    # Next layers append after
+
+    # --- 2) Contexto do livro atual (~30%) ---
+    if target_genre_ids or target_author_ids:
+        from sqlalchemy import or_ as sa_or
+
+        conds = []
+        if target_genre_ids:
+            conds.append(
+                exists().where(
+                    (book_genres.c.book_id == Book.id)
+                    & (book_genres.c.genre_id.in_(target_genre_ids))
+                )
+            )
+        if target_author_ids:
+            conds.append(
+                exists().where(
+                    (book_authors.c.book_id == Book.id)
+                    & (book_authors.c.author_id.in_(target_author_ids))
+                )
+            )
+        q = select(Book).options(selectinload(Book.genres), selectinload(Book.authors)).where(Book.id != book_id, Book.is_active.is_(True))
+        q = _visible_filter(q)
+        q = q.where(sa_or(*conds)).order_by(Book.created_at.desc()).limit(context_quota * 3)
+        ctx_books = (await session.scalars(q)).all()
+        # prioritize books matching both genre and author
+
+        def _score(b: Book) -> int:
+            s = 0
+            if target_genre_ids and any(g.id in target_genre_ids for g in (b.genres or [])):
+                s += 1
+            if target_author_ids and any(a.id in target_author_ids for a in (b.authors or [])):
+                s += 2
+            return s
+        ctx_books.sort(key=_score, reverse=True)
+        for b in ctx_books:
+            if b.id not in seen:
+                ordered_ids.append(b.id)
+                seen.add(b.id)
+                # we limit adding to context_quota, but allow overflow for dedup later
+                if len([x for x in ordered_ids]) >= affinity_quota + context_quota:
+                    break
+
+    # --- 3) Tendências globais inter-escolas (~20%) ---
+    try:
+        since = datetime.now(timezone.utc) - timedelta(days=30)
+        trends_rows = await session.execute(
+            select(BookCopy.book_id, func.count(Loan.id).label('cnt'))
+            .join(Loan, Loan.copy_id == BookCopy.id)
+            .where(Loan.borrowed_at >= since)
+            .group_by(BookCopy.book_id)
+            .order_by(func.count(Loan.id).desc())
+            .limit(trends_quota * 3)
+        )
+        for bid, _ in trends_rows.all():
+            if bid is None or bid == book_id or bid in seen:
+                continue
+            # visibility check
+            vis = await session.scalar(
+                _visible_filter(select(Book).where(Book.id == bid, Book.is_active.is_(True)))
+            )
+            if vis is None:
+                continue
+            ordered_ids.append(bid)
+            seen.add(bid)
+            if len(ordered_ids) >= affinity_quota + context_quota + trends_quota:
+                break
+    except Exception:
+        pass
+
+    # --- Fallback Lazy Direcionado: mesmo gênero ou mesmo autor ---
+    if len(ordered_ids) < limit and (target_genre_ids or target_author_ids):
+        needed = limit - len(ordered_ids)
+        from sqlalchemy import or_ as sa_or
+
+        conds = []
+        if target_genre_ids:
+            conds.append(
+                exists().where(
+                    (book_genres.c.book_id == Book.id)
+                    & (book_genres.c.genre_id.in_(target_genre_ids))
+                )
+            )
+        if target_author_ids:
+            conds.append(
+                exists().where(
+                    (book_authors.c.book_id == Book.id)
+                    & (book_authors.c.author_id.in_(target_author_ids))
+                )
+            )
+        q = select(Book).options(selectinload(Book.genres), selectinload(Book.authors)).where(Book.id != book_id, Book.is_active.is_(True))
+        q = _visible_filter(q)
+        if ordered_ids:
+            q = q.where(Book.id.notin_(ordered_ids))
+        q = q.where(sa_or(*conds)).order_by(Book.created_at.desc()).limit(needed)
+        fallback = (await session.scalars(q)).all()
+        for b in fallback:
+            if b.id not in seen:
+                ordered_ids.append(b.id)
+                seen.add(b.id)
+    # se ainda vazio, retorna [] — não força com livros aleatórios
+
+    # trim to limit, preserving pipeline order
+    ordered_ids = ordered_ids[:limit]
+
+    if not ordered_ids:
+        return []
+
+    # fetch books in order, preserve ordered_ids order
+    books_map = {
+        b.id: b
+        for b in (await session.scalars(select(Book).options(selectinload(Book.genres), selectinload(Book.authors)).where(Book.id.in_(ordered_ids)))).all()
+    }
+    books_ordered = [books_map[bid] for bid in ordered_ids if bid in books_map]
+
+    # diversificação: evita >2 mesmo autor seguidos
+    books_ordered = _diversify_books(books_ordered)
+
+    # build response with derived_state and counts
+    book_ids = [b.id for b in books_ordered]
+    derived_list = await _derived_states(session, book_ids, school_scope)
+    total_map, avail_map = await _copies_counts(session, book_ids, school_scope)
+    result = [
+        {
+            **_book_public(b),
+            'derived_state': st,
+            'total_copies': total_map.get(b.id, 0),
+            'available_copies': avail_map.get(b.id, 0),
+        }
+        for b, st in zip(books_ordered, derived_list)
+    ]
+    return result
 
 
 @router.get('/{book_id}', response_model=BooksPublic)

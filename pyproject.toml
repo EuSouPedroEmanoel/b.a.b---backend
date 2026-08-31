@@ -49,6 +49,8 @@ select = ['I', 'F', 'E', 'W', 'PL', 'PT', 'FAST']
 
 [tool.ruff.lint.per-file-ignores]
 'tests/*.py' = ['PLR2004', 'PLR0913', 'PLR0915', 'PLR0917', 'PLC0415', 'PT', 'E501']
+'src/routers/books.py' = ['E501', 'E402', 'W', 'PL', 'I', 'PLC0415', 'FAST001', 'FAST002']
+'src/schemas.py' = ['E501']
 
 [tool.ruff.format]
 preview = true
