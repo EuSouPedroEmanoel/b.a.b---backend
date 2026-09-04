@@ -23,6 +23,8 @@ from sqlalchemy.orm import (
     relationship,
 )
 
+from src.utils.cpf import CPF_LENGTH
+
 table_registry = registry()
 
 # association tables for N:N Book <-> Genre / Author (global)
@@ -444,6 +446,35 @@ class Loan:
         init=False, foreign_keys='Loan.user_id', lazy='selectin'
     )
     school: Mapped[School] = relationship(init=False, lazy='selectin')
+
+    @property
+    def internal_code(self) -> str:
+        return self.copy.code
+
+    @property
+    def book_title(self) -> str:
+        return self.copy.book.title
+
+    @property
+    def book_id(self) -> int:
+        return self.copy.book_id
+
+    @property
+    def book_cover_url(self) -> str | None:
+        return self.copy.book.cover_url
+
+    @property
+    def borrower_username(self) -> str:
+        return self.borrower.username
+
+    @property
+    def borrower_cpf_masked(self) -> str | None:
+        if not self.borrower.cpf:
+            return None
+        digits = ''.join(ch for ch in self.borrower.cpf if ch.isdigit())
+        if len(digits) != CPF_LENGTH:
+            return '***.***.***-**'
+        return f'***.***.***-{digits[-2:]}'
 
 
 @table_registry.mapped_as_dataclass()

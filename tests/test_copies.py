@@ -33,6 +33,19 @@ def test_create_book_copy(client, token, book, user):
     assert data['edited_by'] is None
 
 
+def test_create_book_copy_rejects_numeric_code(client, token, book):
+    response = client.post(
+        f'/books/{book.id}/copies/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'code': '123456'},
+    )
+
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert 'Código interno não pode começar com número' in str(
+        response.json()
+    )
+
+
 def test_create_book_copy_book_not_found(client, token):
     response = client.post(
         '/books/10/copies/',
@@ -157,6 +170,35 @@ async def test_list_copies_pagination_should_return_2_copies(
 
     assert len(response.json()['items']) == expected_copies
     assert response.json()['items'] == expected_json
+
+
+@pytest.mark.asyncio
+async def test_list_copies_filters_by_internal_code(
+    session, client, user, token, book
+):
+    wanted = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        code='EX-LOOKUP-01',
+    )
+    other = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        code='EX-LOOKUP-02',
+    )
+    session.add_all([wanted, other])
+    await session.commit()
+
+    response = client.get(
+        '/copies/?internal_code=EX-LOOKUP-01',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['total'] == 1
+    assert response.json()['items'][0]['code'] == 'EX-LOOKUP-01'
 
 
 @pytest.mark.asyncio

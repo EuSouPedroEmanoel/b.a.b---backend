@@ -1,7 +1,14 @@
 from datetime import date, datetime
 from typing import Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from src.models import (
     BookCondition,
@@ -284,6 +291,12 @@ class FilterPage(BaseModel):
         return self.size
 
 
+class FilterUser(FilterPage):
+    role: UserRole | None = None
+    school_id: int | None = None
+    cpf: str | None = None
+
+
 class FilterBook(FilterPage):
     title: str | None = Field(None, min_length=3)
     description: str | None = None
@@ -325,10 +338,12 @@ class FilterCopy(FilterPage):
     condition: BookCondition | None = None
     school_id: int | None = None  # SUPER_ADMIN can filter by school
     book_id: int | None = None
+    internal_code: str | None = None
 
 
 class FilterLoan(FilterPage):
     status: LoanStatus | None = None
+    situation: Literal['borrowed', 'overdue', 'due_soon'] | None = None
     user_id: int | None = None
     copy_id: int | None = None
 
@@ -346,6 +361,14 @@ class BookCopySchema(BaseModel):
     condition: BookCondition = BookCondition.GOOD
     acquisition_date: date | None = None
     notes: str | None = None
+
+    @field_validator('code')
+    @classmethod
+    def validate_code_prefix(cls, value: str) -> str:
+        value = value.strip()
+        if not value or value[0].isdigit():
+            raise ValueError('Código interno não pode começar com número')
+        return value
 
 
 class BookCopyPublic(BookCopySchema):
@@ -368,6 +391,16 @@ class BookCopyUpdate(BaseModel):
     condition: BookCondition | None = None
     acquisition_date: date | None = None
     notes: str | None = None
+
+    @field_validator('code')
+    @classmethod
+    def validate_code_prefix(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        value = value.strip()
+        if not value or value[0].isdigit():
+            raise ValueError('Código interno não pode começar com número')
+        return value
 
 
 # endregion
@@ -460,8 +493,27 @@ class BookSuggestResponse(BaseModel):
 # endregion
 # region - Loans
 class LoanCreate(BaseModel):
-    copy_id: int
-    user_id: int
+    copy_id: int | None = None
+    user_id: int | None = None
+    internal_code: str | None = Field(default=None, min_length=1)
+    cpf: str | None = Field(default=None, min_length=1)
+    school_id: int | None = None
+
+    @model_validator(mode='after')
+    def validate_identifiers(self):
+        legacy_pair = self.copy_id is not None and self.user_id is not None
+        public_pair = bool(self.internal_code and self.cpf)
+        if legacy_pair == public_pair:
+            raise ValueError(
+                'Informe internal_code e cpf ou copy_id e user_id'
+            )
+        if self.internal_code:
+            self.internal_code = self.internal_code.strip()
+        if self.cpf:
+            self.cpf = normalize_cpf(self.cpf)
+            if not validate_cpf(self.cpf):
+                raise ValueError('CPF inválido')
+        return self
 
 
 class LoanPublic(BaseModel):
@@ -474,6 +526,12 @@ class LoanPublic(BaseModel):
     returned_at: datetime | None = None
     late_days: int = 0
     status: LoanStatus
+    internal_code: str
+    book_id: int
+    book_title: str
+    borrower_username: str
+    book_cover_url: str | None = None
+    borrower_cpf_masked: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

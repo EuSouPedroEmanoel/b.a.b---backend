@@ -1,6 +1,10 @@
 from http import HTTPStatus
 
+import pytest
+
+from src.models import User, UserRole
 from src.schemas import UserPublic
+from src.security import get_password_hash
 
 
 def test_create_user(client, school, super_admin_token):
@@ -77,6 +81,33 @@ def test_read_user_by_id(client, user, token):
     assert response.json() == UserPublic.model_validate(user).model_dump(
         mode='json'
     )
+
+
+@pytest.mark.asyncio
+async def test_read_users_filters_by_cpf_and_includes_inactive_user(
+    session, client, school, token
+):
+    inactive = User(
+        username='inactive_lookup',
+        email='inactive_lookup@example.com',
+        cpf='52998224725',
+        password=get_password_hash('secret'),
+        role=UserRole.STUDENT,
+        school_id=school.id,
+        is_active=False,
+    )
+    session.add(inactive)
+    await session.commit()
+
+    response = client.get(
+        '/users/?cpf=529.982.247-25',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['total'] == 1
+    assert response.json()['items'][0]['id'] == inactive.id
+    assert response.json()['items'][0]['is_active'] is False
 
 
 def test_raise_read_user_by_id(client, user, token):

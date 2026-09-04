@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_session
 from src.models import User, UserRole
 from src.schemas import (
-    FilterPage,
+    FilterUser,
     Message,
     PaginatedResponse,
     StaffCreateSchema,
@@ -177,11 +177,9 @@ async def create_student(
 async def read_users(
     current_user: CurrentUser,
     session: Session,
-    filter_users: Annotated[FilterPage, Depends()],
-    role: UserRole | None = None,
-    school_id: int | None = None,
+    filter_users: Annotated[FilterUser, Depends()],
 ):
-    sttm = select(User).where(User.is_active.is_(True)).order_by(User.id)
+    sttm = select(User).order_by(User.id)
     # Tenant isolation: SCHOOL_ADMIN / LIBRARIAN / TEACHER / STUDENT
     # only see users in same school. SUPER_ADMIN sees all.
     if current_user.role != UserRole.SUPER_ADMIN:
@@ -191,12 +189,19 @@ async def read_users(
                 detail='User without school cannot list users',
             )
         sttm = sttm.where(User.school_id == current_user.school_id)
-    elif school_id is not None:
+    elif filter_users.school_id is not None:
         # SUPER_ADMIN may filter users by a specific school
-        sttm = sttm.where(User.school_id == school_id)
+        sttm = sttm.where(User.school_id == filter_users.school_id)
 
-    if role is not None:
-        sttm = sttm.where(User.role == role)
+    if filter_users.role is not None:
+        sttm = sttm.where(User.role == filter_users.role)
+
+    if filter_users.cpf is None:
+        sttm = sttm.where(User.is_active.is_(True))
+    else:
+        sttm = sttm.where(
+            User.cpf == normalize_cpf(filter_users.cpf)
+        )
 
     items, total, page, size, pages = await paginate(
         session, sttm, filter_users

@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.database import get_session
 from src.models import (
@@ -64,23 +65,74 @@ def _compute_due_date(penalty_days: int) -> datetime:
     return datetime.now(tz=ZoneInfo('UTC')) + timedelta(days=loan_days)
 
 
-@router.post('/', response_model=LoanPublic, status_code=HTTPStatus.CREATED)
-async def create_loan(
+def _apply_situation_filter(query, situation):
+    if not situation:
+        return query
+
+    open_statuses = [LoanStatus.ACTIVE, LoanStatus.OVERDUE]
+    query = query.where(Loan.status.in_(open_statuses))
+    if situation == 'borrowed':
+        return query
+
+    # The database stores UTC timestamps without timezone information.
+    today = datetime.now(tz=ZoneInfo('UTC')).replace(
+        hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+    )
+    if situation == 'overdue':
+        return query.where(Loan.due_date < today)
+
+    return query.where(
+        Loan.due_date >= today,
+        Loan.due_date < today + timedelta(days=4),
+    )
+
+
+def _loan_public_query():
+    return select(Loan).options(
+        selectinload(Loan.copy).selectinload(BookCopy.book),
+        selectinload(Loan.borrower),
+    )
+
+
+async def _resolve_copy(
     payload: LoanCreate,
-    session: Session,
-    current_user: LibrarianOrAbove,
-):
-    # staff must belong to a school (except SUPER_ADMIN who can specify any?)
-    if current_user.role == UserRole.SUPER_ADMIN:
-        # SUPER_ADMIN can operate for any school; infer from copy's school
-        copy = await session.scalar(
-            select(BookCopy).where(BookCopy.id == payload.copy_id)
+    session: AsyncSession,
+    current_user: User,
+) -> tuple[BookCopy, int]:
+    if payload.internal_code is not None:
+        copy_query = select(BookCopy).where(
+            BookCopy.code == payload.internal_code
         )
-        if not copy:
+        if current_user.role == UserRole.SUPER_ADMIN:
+            if payload.school_id is not None:
+                copy_query = copy_query.where(
+                    BookCopy.school_id == payload.school_id
+                )
+        else:
+            if current_user.school_id is None:
+                raise HTTPException(
+                    status_code=HTTPStatus.FORBIDDEN,
+                    detail='User without school cannot create loans',
+                )
+            copy_query = copy_query.where(
+                BookCopy.school_id == current_user.school_id
+            )
+        copies = list((await session.scalars(copy_query)).all())
+        if len(copies) > 1:
+            raise HTTPException(
+                status_code=HTTPStatus.CONFLICT,
+                detail='Internal code is ambiguous across schools',
+            )
+        copy = copies[0] if copies else None
+        if copy is None:
             raise HTTPException(
                 status_code=HTTPStatus.NOT_FOUND, detail='Copy not found'
             )
-        school_id = copy.school_id
+        return copy, copy.school_id
+
+    if current_user.role == UserRole.SUPER_ADMIN:
+        copy_query = select(BookCopy).where(BookCopy.id == payload.copy_id)
+        school_id = None
     else:
         if current_user.school_id is None:
             raise HTTPException(
@@ -88,28 +140,30 @@ async def create_loan(
                 detail='User without school cannot create loans',
             )
         school_id = current_user.school_id
-        copy = await session.scalar(
-            select(BookCopy).where(
-                BookCopy.id == payload.copy_id,
-                BookCopy.school_id == school_id,
-            )
+        copy_query = select(BookCopy).where(
+            BookCopy.id == payload.copy_id,
+            BookCopy.school_id == school_id,
         )
-        if not copy:
-            raise HTTPException(
-                status_code=HTTPStatus.NOT_FOUND, detail='Copy not found'
-            )
-
-    if copy.state != BooksStates.AVAILABLE:
+    copy = await session.scalar(copy_query)
+    if copy is None:
         raise HTTPException(
-            status_code=HTTPStatus.CONFLICT,
-            detail='Copy is not available for loan',
+            status_code=HTTPStatus.NOT_FOUND, detail='Copy not found'
         )
+    return copy, copy.school_id
 
-    # validate borrower
-    borrower = await session.scalar(
-        select(User).where(User.id == payload.user_id)
-    )
-    if not borrower:
+
+async def _resolve_borrower(
+    payload: LoanCreate,
+    school_id: int,
+    session: AsyncSession,
+) -> User:
+    borrower_query = select(User)
+    if payload.cpf is not None:
+        borrower_query = borrower_query.where(User.cpf == payload.cpf)
+    else:
+        borrower_query = borrower_query.where(User.id == payload.user_id)
+    borrower = await session.scalar(borrower_query)
+    if borrower is None:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Borrower not found'
         )
@@ -122,6 +176,23 @@ async def create_loan(
             status_code=HTTPStatus.BAD_REQUEST,
             detail='Borrower does not belong to the same school',
         )
+    return borrower
+
+
+@router.post('/', response_model=LoanPublic, status_code=HTTPStatus.CREATED)
+async def create_loan(
+    payload: LoanCreate,
+    session: Session,
+    current_user: LibrarianOrAbove,
+):
+    copy, school_id = await _resolve_copy(payload, session, current_user)
+    if copy.state != BooksStates.AVAILABLE:
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT,
+            detail='Copy is not available for loan',
+        )
+
+    borrower = await _resolve_borrower(payload, school_id, session)
 
     # penalty / due_date
     penalty = await _get_penalty_days(session, borrower.id)
@@ -140,7 +211,9 @@ async def create_loan(
     session.add(copy)
 
     await session.commit()
-    await session.refresh(loan)
+    loan = await session.scalar(
+        _loan_public_query().where(Loan.id == loan.id)
+    )
     return loan
 
 
@@ -150,7 +223,9 @@ async def return_loan(
     session: Session,
     current_user: LibrarianOrAbove,
 ):
-    loan = await session.scalar(select(Loan).where(Loan.id == loan_id))
+    loan = await session.scalar(
+        _loan_public_query().where(Loan.id == loan_id)
+    )
     if not loan:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Loan not found'
@@ -223,7 +298,7 @@ async def list_loans(
     loan_filter: Annotated[FilterLoan, Depends()],
 ):
     # Students/Teachers only see own loans; staff see school loans
-    query = select(Loan)
+    query = _loan_public_query()
 
     if current_user.role in {UserRole.STUDENT, UserRole.TEACHER}:
         query = query.where(Loan.user_id == current_user.id)
@@ -248,6 +323,8 @@ async def list_loans(
     if loan_filter.status:
         query = query.where(Loan.status == loan_filter.status)
 
+    query = _apply_situation_filter(query, loan_filter.situation)
+
     query = query.order_by(Loan.id)
     items, total, page, size, pages = await paginate(
         session, query, loan_filter
@@ -267,9 +344,10 @@ async def list_my_loans(
     current_user: CurrentUser,
     loan_filter: Annotated[FilterLoan, Depends()],
 ):
-    query = select(Loan).where(Loan.user_id == current_user.id)
+    query = _loan_public_query().where(Loan.user_id == current_user.id)
     if loan_filter.status:
         query = query.where(Loan.status == loan_filter.status)
+    query = _apply_situation_filter(query, loan_filter.situation)
     query = query.order_by(Loan.id)
     items, total, page, size, pages = await paginate(
         session, query, loan_filter
@@ -289,7 +367,9 @@ async def get_loan(
     session: Session,
     current_user: CurrentUser,
 ):
-    loan = await session.scalar(select(Loan).where(Loan.id == loan_id))
+    loan = await session.scalar(
+        _loan_public_query().where(Loan.id == loan_id)
+    )
     if not loan:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Loan not found'

@@ -1,12 +1,14 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from http import HTTPStatus
 from zoneinfo import ZoneInfo
 
 import pytest
 from freezegun import freeze_time
 
-from src.models import BookCopy, BooksStates, LoanStatus
-from tests.factories import BookCopyFactory
+from src.models import BookCopy, BooksStates, Loan, LoanStatus, User, UserRole
+from src.schemas import LoanCreate
+from src.security import get_password_hash
+from tests.factories import BookCopyFactory, BookFactory
 
 
 @pytest.mark.asyncio
@@ -42,6 +44,116 @@ async def test_create_loan_success(
     session.expire_all()
     db_copy = await session.get(BookCopy, copy.id)
     assert db_copy.state == BooksStates.BORROWED
+
+
+@pytest.mark.asyncio
+async def test_create_loan_by_internal_code_and_cpf(
+    session, client, user, token, student, book
+):
+    student.cpf = '52998224725'
+    session.add(student)
+    await session.commit()
+
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        code='EX-CODIGO-01',
+        state=BooksStates.AVAILABLE,
+    )
+    session.add(copy)
+    await session.commit()
+
+    resp = client.post(
+        '/loans/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'internal_code': copy.code, 'cpf': '529.982.247-25'},
+    )
+
+    assert resp.status_code == HTTPStatus.CREATED
+    data = resp.json()
+    assert data['internal_code'] == copy.code
+    assert data['book_id'] == book.id
+    assert data['book_title'] == book.title
+    assert data['book_cover_url'] == book.cover_url
+    assert data['borrower_username'] == student.username
+    assert data['borrower_cpf_masked'] == '***.***.***-25'
+    assert '52998224725' not in resp.text
+    loan = await session.get(Loan, data['id'])
+    student.cpf = '123'
+    loan.borrower = student
+    assert loan.borrower_cpf_masked == '***.***.***-**'
+
+
+def test_loan_create_rejects_invalid_identifier_combinations():
+    with pytest.raises(ValueError, match='Informe internal_code'):
+        LoanCreate(
+            copy_id=1,
+            user_id=1,
+            internal_code='EX-1',
+            cpf='52998224725',
+        )
+    with pytest.raises(ValueError, match='CPF inválido'):
+        LoanCreate(internal_code='EX-1', cpf='123')
+
+
+@pytest.mark.asyncio
+async def test_super_admin_disambiguates_internal_code_by_school(
+    session, client, user, super_admin, super_admin_token, book, other_school
+):
+    code = 'EX-DUPLICADO-01'
+    first = BookCopyFactory(
+        book_id=book.id,
+        user_id=super_admin.id,
+        school_id=other_school.id,
+        code=code,
+        state=BooksStates.AVAILABLE,
+    )
+    second = BookCopyFactory(
+        book_id=book.id,
+        user_id=super_admin.id,
+        school_id=user.school_id,
+        code=code,
+        state=BooksStates.AVAILABLE,
+    )
+    borrower = User(
+        username='duplicate_code_borrower',
+        email='duplicate_code_borrower@example.com',
+        cpf='39053344705',
+        password=get_password_hash('secret'),
+        role=UserRole.STUDENT,
+        school_id=other_school.id,
+    )
+    session.add_all([first, second, borrower])
+    await session.commit()
+
+    headers = {'Authorization': f'Bearer {super_admin_token}'}
+    missing_school = client.post(
+        '/loans/',
+        headers=headers,
+        json={
+            'internal_code': code,
+            'cpf': borrower.cpf,
+            'school_id': 99999,
+        },
+    )
+    assert missing_school.status_code == HTTPStatus.NOT_FOUND
+    ambiguous = client.post(
+        '/loans/', headers=headers, json={'internal_code': code, 'cpf': borrower.cpf}
+    )
+    assert ambiguous.status_code == HTTPStatus.CONFLICT
+
+    resolved = client.post(
+        '/loans/',
+        headers=headers,
+        json={
+            'internal_code': code,
+            'cpf': borrower.cpf,
+            'school_id': other_school.id,
+        },
+    )
+    assert resolved.status_code == HTTPStatus.CREATED
+    assert resolved.json()['school_id'] == other_school.id
 
 
 def test_create_loan_forbidden_for_student(
@@ -442,6 +554,76 @@ async def test_list_loans_pagination_and_filter(
 
 
 @pytest.mark.asyncio
+@freeze_time('2026-09-04 12:00:00')
+async def test_list_loans_situation_filters(
+    session, client, user, token, student, book
+):
+    copies = [
+        BookCopyFactory(
+            book_id=book.id,
+            user_id=user.id,
+            school_id=user.school_id,
+            state=BooksStates.BORROWED,
+            code=f'EX-SIT-{index}',
+        )
+        for index in range(6)
+    ]
+    session.add_all(copies)
+    await session.commit()
+    for copy in copies:
+        await session.refresh(copy)
+
+    today = datetime(2026, 9, 4)
+    loans = [
+        Loan(
+            copy_id=copy.id,
+            user_id=student.id,
+            school_id=user.school_id,
+            due_date=today + timedelta(days=offset),
+            status=LoanStatus.ACTIVE,
+        )
+        for copy, offset in zip(copies[:5], [-1, 0, 1, 3, 4])
+    ]
+    loans.append(
+        Loan(
+            copy_id=copies[5].id,
+            user_id=student.id,
+            school_id=user.school_id,
+            due_date=today,
+            status=LoanStatus.RETURNED,
+        )
+    )
+    session.add_all(loans)
+    await session.commit()
+
+    headers = {'Authorization': f'Bearer {token}'}
+    borrowed = client.get('/loans/?situation=borrowed', headers=headers)
+    overdue = client.get('/loans/?situation=overdue', headers=headers)
+    due_soon = client.get('/loans/?situation=due_soon', headers=headers)
+    returned = client.get('/loans/?status=returned', headers=headers)
+
+    assert borrowed.status_code == HTTPStatus.OK
+    assert borrowed.json()['total'] == 5
+    assert overdue.json()['total'] == 1
+    assert due_soon.json()['total'] == 3
+    assert returned.json()['total'] == 1
+
+    student_token = client.post(
+        '/auth/token',
+        data={'username': student.username, 'password': student.clean_password},
+    ).json()['access_token']
+    me_headers = {'Authorization': f'Bearer {student_token}'}
+    me_overdue = client.get(
+        '/loans/me?situation=overdue', headers=me_headers
+    )
+    me_due_soon = client.get(
+        '/loans/me?situation=due_soon', headers=me_headers
+    )
+    assert me_overdue.json()['total'] == 1
+    assert me_due_soon.json()['total'] == 3
+
+
+@pytest.mark.asyncio
 async def test_student_cannot_see_other_loans(
     session, client, user, token, student, teacher, book
 ):
@@ -602,6 +784,15 @@ def test_create_loan_without_school_forbidden(client, book):
             '/loans/',
             headers={'Authorization': 'Bearer fake'},
             json={'copy_id': 1, 'user_id': 1},
+        )
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+        resp = client.post(
+            '/loans/',
+            headers={'Authorization': 'Bearer fake'},
+            json={
+                'internal_code': 'EX-NO-SCHOOL',
+                'cpf': '52998224725',
+            },
         )
         assert resp.status_code == HTTPStatus.FORBIDDEN
     finally:
@@ -913,6 +1104,56 @@ async def test_list_loans_librarian_filters(
         '/loans/?status=active', headers={'Authorization': f'Bearer {token}'}
     )
     assert resp3.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_list_loans_librarian_loads_book_from_another_user(
+    session, client, user, token, student, super_admin
+):
+    book = BookFactory(
+        user_id=super_admin.id,
+        title='Livro de outro responsável',
+        cover_url='https://example.test/capa.jpg',
+    )
+    session.add(book)
+    await session.commit()
+    await session.refresh(book)
+
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        state=BooksStates.BORROWED,
+        code='EX-LIB-REL-01',
+    )
+    session.add(copy)
+    await session.commit()
+    await session.refresh(copy)
+
+    loan = Loan(
+        copy_id=copy.id,
+        user_id=student.id,
+        school_id=user.school_id,
+        due_date=datetime.now(tz=ZoneInfo('UTC')) + timedelta(days=7),
+        status=LoanStatus.ACTIVE,
+    )
+    session.add(loan)
+    await session.commit()
+
+    copy_id = copy.id
+    session.expunge_all()
+
+    response = client.get(
+        f'/loans/?copy_id={copy_id}&situation=borrowed',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+
+    assert response.status_code == HTTPStatus.OK
+    item = response.json()['items'][0]
+    assert item['internal_code'] == 'EX-LIB-REL-01'
+    assert item['book_title'] == 'Livro de outro responsável'
+    assert item['book_cover_url'] == 'https://example.test/capa.jpg'
+    assert item['borrower_username'] == student.username
 
 
 def test_list_loans_without_school_forbidden(client):

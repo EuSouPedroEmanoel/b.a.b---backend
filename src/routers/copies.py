@@ -63,6 +63,8 @@ async def list_copies(
         sttm = sttm.where(BookCopy.condition == copy_filter.condition)
     if copy_filter.book_id:
         sttm = sttm.where(BookCopy.book_id == copy_filter.book_id)
+    if copy_filter.internal_code:
+        sttm = sttm.where(BookCopy.code == copy_filter.internal_code.strip())
 
     items, total, page, size, pages = await paginate(
         session, sttm, copy_filter
