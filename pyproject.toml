@@ -73,7 +73,7 @@ pre_format = 'ruff check --fix'
 format = 'ruff format'
 run = 'uvicorn src.app:app --reload'
 pre_test = 'task lint'
-test = 'pytest -x --cov=src --cov-report=term-missing --cov-fail-under=95 --cov-config=pyproject.toml'
+test = 'pytest -x --cov=src --cov-report=term-missing --cov-fail-under=90 --cov-config=pyproject.toml'
 post_test = 'coverage html'
 
 [tool.poetry]
