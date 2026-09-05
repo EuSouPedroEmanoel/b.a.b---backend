@@ -2,8 +2,8 @@ from http import HTTPStatus
 
 import pytest
 
-from src.models import BooksStates
-from tests.factories import BookCopyFactory
+from src.models import BooksStates, ReservationStatus
+from tests.factories import BookCopyFactory, ReservationFactory
 
 
 @pytest.mark.asyncio
@@ -37,6 +37,60 @@ async def test_create_reservation_success(
     assert resp.json()['book_id'] == book.id
     assert resp.json()['user_id'] == student.id
     assert resp.json()['status'] == 'active'
+
+
+@pytest.mark.asyncio
+async def test_queue_metrics_include_ready_reservations(
+    session, client, user, token, student, teacher, book
+):
+    """A ready reservation keeps its place while a later reader waits."""
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        state=BooksStates.RESERVED,
+        code='RESERVED-QUEUE-1',
+    )
+    session.add(copy)
+    await session.flush()
+    ready = ReservationFactory(
+        book_id=book.id,
+        user_id=student.id,
+        school_id=user.school_id,
+        status=ReservationStatus.READY,
+        copy_id=copy.id,
+    )
+    waiting = ReservationFactory(
+        book_id=book.id,
+        user_id=teacher.id,
+        school_id=user.school_id,
+        status=ReservationStatus.ACTIVE,
+    )
+    session.add_all([ready, waiting])
+    await session.commit()
+
+    ready_response = client.get(
+        '/reservations/?status=ready',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    active_response = client.get(
+        '/reservations/?status=active',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+
+    ready_item = next(
+        item for item in ready_response.json()['items'] if item['id'] == ready.id
+    )
+    active_item = next(
+        item
+        for item in active_response.json()['items']
+        if item['id'] == waiting.id
+    )
+    assert ready_item['queue_position'] == 1
+    assert active_item['queue_position'] == 2
+    assert ready_item['queue_total'] == active_item['queue_total'] == 2
+    assert ready_item['reserver_role'] == 'student'
+    assert ready_item['reserver_is_active'] is True
 
 
 @pytest.mark.asyncio

@@ -4,10 +4,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.database import get_session
 from src.models import (
-    Book,
     BookCopy,
     BooksStates,
     Reservation,
@@ -24,11 +24,66 @@ from src.schemas import (
 )
 from src.security import get_current_user
 from src.utils.pagination import paginate
+from src.utils.reservation_queue import (
+    lock_book_queue,
+    promote_copy_to_next_reservation,
+)
 
 router = APIRouter(prefix='/reservations', tags=['reservations'])
 
 Session = Annotated[AsyncSession, Depends(get_session)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+def reservation_public(
+    reservation: Reservation,
+    queue_position: int | None = None,
+    queue_total: int | None = None,
+):
+    return {
+        'id': reservation.id,
+        'book_id': reservation.book_id,
+        'user_id': reservation.user_id,
+        'school_id': reservation.school_id,
+        'status': reservation.status,
+        'created_at': reservation.created_at,
+        'copy_id': reservation.copy_id,
+        'book_title': reservation.book.title,
+        'book_cover_url': reservation.book.cover_url,
+        'reserver_username': reservation.reserver.username,
+        'reserver_role': reservation.reserver.role,
+        'reserver_is_active': reservation.reserver.is_active,
+        'reserver_turma_numero': reservation.reserver.turma_numero,
+        'reserver_turma_letra': reservation.reserver.turma_letra,
+        'internal_code': reservation.copy.code if reservation.copy else None,
+        'queue_position': queue_position,
+        'queue_total': queue_total,
+        'ready_at': reservation.ready_at,
+        'pickup_expires_at': reservation.pickup_expires_at,
+    }
+
+
+async def queue_positions(session: Session, items: list[Reservation]):
+    positions: dict[int, int] = {}
+    totals: dict[tuple[int, int], int] = {}
+    groups = {(item.book_id, item.school_id) for item in items
+              if item.status in {
+                  ReservationStatus.ACTIVE, ReservationStatus.READY
+              }}
+    for book_id, school_id in groups:
+        ordered = (await session.scalars(
+            select(Reservation.id).where(
+                Reservation.book_id == book_id,
+                Reservation.school_id == school_id,
+                Reservation.status.in_([
+                    ReservationStatus.ACTIVE, ReservationStatus.READY
+                ]),
+            ).order_by(Reservation.created_at, Reservation.id)
+        )).all()
+        totals[(book_id, school_id)] = len(ordered)
+        positions.update({reservation_id: index for index, reservation_id in
+                          enumerate(ordered, start=1)})
+    return positions, totals
 
 
 @router.post(
@@ -49,7 +104,7 @@ async def create_reservation(
             status_code=HTTPStatus.FORBIDDEN, detail='User without school'
         )
 
-    book = await session.scalar(select(Book).where(Book.id == payload.book_id))
+    book = await lock_book_queue(session, payload.book_id)
     if not book:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Book not found'
@@ -59,13 +114,16 @@ async def create_reservation(
             status_code=HTTPStatus.BAD_REQUEST, detail='Book is inactive'
         )
 
-    # check already has active reservation for same book
+    # Book row lock serializes availability and queue changes for this title.
     existing = await session.scalar(
         select(Reservation).where(
             Reservation.book_id == book.id,
             Reservation.user_id == current_user.id,
             Reservation.school_id == current_user.school_id,
-            Reservation.status == ReservationStatus.ACTIVE,
+            Reservation.status.in_([
+                ReservationStatus.ACTIVE,
+                ReservationStatus.READY,
+            ]),
         )
     )
     if existing:
@@ -97,7 +155,13 @@ async def create_reservation(
     session.add(reservation)
     await session.commit()
     await session.refresh(reservation)
-    return reservation
+    await session.refresh(
+        reservation, attribute_names=['book', 'reserver', 'copy']
+    )
+    positions, totals = await queue_positions(session, [reservation])
+    key = (reservation.book_id, reservation.school_id)
+    return reservation_public(reservation, positions.get(reservation.id),
+                              totals.get(key))
 
 
 @router.get('/', response_model=PaginatedResponse[ReservationPublic])
@@ -106,7 +170,11 @@ async def list_reservations(
     current_user: CurrentUser,
     filt: Annotated[FilterReservation, Depends()],
 ):
-    query = select(Reservation)
+    query = select(Reservation).options(
+        selectinload(Reservation.book),
+        selectinload(Reservation.reserver),
+        selectinload(Reservation.copy),
+    )
 
     # Students/Teachers see only own; staff see school's
     if current_user.role in {UserRole.STUDENT, UserRole.TEACHER}:
@@ -127,8 +195,14 @@ async def list_reservations(
 
     query = query.order_by(Reservation.created_at)
     items, total, page, size, pages = await paginate(session, query, filt)
+    positions, totals = await queue_positions(session, items)
     return {
-        'items': items,
+        'items': [
+            reservation_public(
+                item, positions.get(item.id),
+                totals.get((item.book_id, item.school_id)),
+            ) for item in items
+        ],
         'total': total,
         'page': page,
         'size': size,
@@ -142,20 +216,63 @@ async def list_my_reservations(
     current_user: CurrentUser,
     filt: Annotated[FilterReservation, Depends()],
 ):
-    query = select(Reservation).where(Reservation.user_id == current_user.id)
+    query = select(Reservation).options(
+        selectinload(Reservation.book), selectinload(Reservation.reserver),
+        selectinload(Reservation.copy),
+    ).where(Reservation.user_id == current_user.id)
     if filt.status:
         query = query.where(Reservation.status == filt.status)
     if filt.book_id:
         query = query.where(Reservation.book_id == filt.book_id)
     query = query.order_by(Reservation.created_at)
     items, total, page, size, pages = await paginate(session, query, filt)
+    positions, totals = await queue_positions(session, items)
     return {
-        'items': items,
+        'items': [
+            reservation_public(
+                item, positions.get(item.id),
+                totals.get((item.book_id, item.school_id)),
+            ) for item in items
+        ],
         'total': total,
         'page': page,
         'size': size,
         'pages': pages,
     }
+
+
+@router.get('/{reservation_id}', response_model=ReservationPublic)
+async def get_reservation(
+    reservation_id: int, session: Session, current_user: CurrentUser
+):
+    reservation = await session.scalar(
+        select(Reservation).options(
+            selectinload(Reservation.book), selectinload(Reservation.reserver),
+            selectinload(Reservation.copy),
+        ).where(Reservation.id == reservation_id)
+    )
+    if not reservation:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='Reservation not found'
+        )
+    if current_user.role != UserRole.SUPER_ADMIN and (
+        reservation.school_id != current_user.school_id
+    ):
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='Reservation not found'
+        )
+    if current_user.role in {UserRole.STUDENT, UserRole.TEACHER} and (
+        reservation.user_id != current_user.id
+    ):
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN, detail='Not enough permissions'
+        )
+    positions, totals = await queue_positions(session, [reservation])
+    return reservation_public(
+        reservation,
+        positions.get(reservation.id),
+        totals.get((reservation.book_id, reservation.school_id)),
+    )
 
 
 @router.delete('/{reservation_id}', response_model=Message)
@@ -164,8 +281,18 @@ async def cancel_reservation(
     session: Session,
     current_user: CurrentUser,
 ):
-    reservation = await session.scalar(
+    initial = await session.scalar(
         select(Reservation).where(Reservation.id == reservation_id)
+    )
+    if not initial:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='Reservation not found'
+        )
+    await lock_book_queue(session, initial.book_id)
+    reservation = await session.scalar(
+        select(Reservation).options(selectinload(Reservation.copy)).where(
+            Reservation.id == reservation_id
+        ).with_for_update()
     )
     if not reservation:
         raise HTTPException(
@@ -184,12 +311,24 @@ async def cancel_reservation(
             status_code=HTTPStatus.FORBIDDEN, detail='Not enough permissions'
         )
 
-    if reservation.status != ReservationStatus.ACTIVE:
+    if reservation.status not in {
+        ReservationStatus.ACTIVE,
+        ReservationStatus.READY,
+    }:
         raise HTTPException(
             status_code=HTTPStatus.CONFLICT, detail='Reservation is not active'
         )
 
+    reserved_copy = reservation.copy
     reservation.status = ReservationStatus.CANCELLED
     session.add(reservation)
+    if reserved_copy is not None:
+        copy = await session.scalar(
+            select(BookCopy)
+            .where(BookCopy.id == reserved_copy.id)
+            .with_for_update()
+        )
+        if copy is not None:
+            await promote_copy_to_next_reservation(session, copy)
     await session.commit()
     return {'message': 'Reservation cancelled'}

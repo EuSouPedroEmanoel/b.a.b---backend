@@ -87,8 +87,10 @@ class LoanStatus(str, Enum):
 
 class ReservationStatus(str, Enum):
     ACTIVE = 'active'
+    READY = 'ready'
     FULFILLED = 'fulfilled'
     CANCELLED = 'cancelled'
+    EXPIRED = 'expired'
 
 
 @table_registry.mapped_as_dataclass()
@@ -487,6 +489,9 @@ class Reservation:
     book_id: Mapped[int] = mapped_column(ForeignKey('books.id'))
     user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
     school_id: Mapped[int] = mapped_column(ForeignKey('schools.id'))
+    copy_id: Mapped[int | None] = mapped_column(
+        ForeignKey('book_copies.id'), kw_only=True, default=None, nullable=True
+    )
     status: Mapped[ReservationStatus] = mapped_column(
         SQLEnum(
             ReservationStatus, values_callable=lambda x: [e.value for e in x]
@@ -501,12 +506,21 @@ class Reservation:
     updated_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now(), onupdate=func.now()
     )
+    ready_at: Mapped[datetime | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
+    )
+    pickup_expires_at: Mapped[datetime | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
+    )
 
     book: Mapped[Book] = relationship(init=False, lazy='selectin')
     reserver: Mapped[User] = relationship(
         init=False, foreign_keys='Reservation.user_id', lazy='selectin'
     )
     school: Mapped[School] = relationship(init=False, lazy='selectin')
+    copy: Mapped[BookCopy | None] = relationship(
+        init=False, foreign_keys='Reservation.copy_id', lazy='selectin'
+    )
 
 
 @table_registry.mapped_as_dataclass()

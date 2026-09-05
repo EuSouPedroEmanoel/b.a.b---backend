@@ -5,7 +5,18 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from src.models import Author, Book, BookCopy, BooksStates, Genre, School, User, UserRole
+from src.models import (
+    Author,
+    Book,
+    BookCopy,
+    BooksStates,
+    Genre,
+    Reservation,
+    ReservationStatus,
+    School,
+    User,
+    UserRole,
+)
 from src.security import get_password_hash
 from src.settings import Settings
 from src.utils.authors import display_name_author, slugify_author
@@ -315,6 +326,73 @@ async def seed_books_and_copies(
     return books
 
 
+async def seed_reservations(
+    session: AsyncSession,
+    schools: list[School],
+    users: dict[str, User],
+    books: list[Book],
+) -> None:
+    """Create stable reservation scenarios for the librarian dev flow."""
+    if len(schools) < 1 or len(books) < 3:
+        return
+
+    school = schools[0]
+    librarian = users.get('librarian_dev1')
+    ready_reader = users.get('student_dev1')
+    waiting_reader = users.get('student_dev2')
+    if not librarian or not ready_reader or not waiting_reader:
+        return
+
+    # Livro Dev 3 has the deterministic EX-DEV-003 copy in school 1,
+    # initially RESERVED in the copy seed, making it suitable for pickup.
+    book = books[2]
+    copy = await session.scalar(
+        select(BookCopy).where(
+            BookCopy.book_id == book.id,
+            BookCopy.school_id == school.id,
+            BookCopy.code == 'EX-DEV-003',
+        )
+    )
+    if not copy:
+        return
+    copy.state = BooksStates.RESERVED
+
+    scenarios = (
+        (ready_reader, ReservationStatus.READY, copy.id),
+        (waiting_reader, ReservationStatus.ACTIVE, None),
+    )
+    for reader, status, copy_id in scenarios:
+        reservation = await session.scalar(
+            select(Reservation).where(
+                Reservation.book_id == book.id,
+                Reservation.user_id == reader.id,
+                Reservation.school_id == school.id,
+                Reservation.status.in_(
+                    [ReservationStatus.ACTIVE, ReservationStatus.READY]
+                ),
+            )
+        )
+        if reservation:
+            reservation.status = status
+            reservation.copy_id = copy_id
+            continue
+        session.add(
+            Reservation(
+                book_id=book.id,
+                user_id=reader.id,
+                school_id=school.id,
+                status=status,
+                copy_id=copy_id,
+            )
+        )
+    await session.commit()
+    print(
+        'Reservation scenarios ready: '
+        f'{book.title} / {copy.code} / {ready_reader.username} (ready), '
+        f'{waiting_reader.username} (active)'
+    )
+
+
 async def seed_dev():
     engine = create_async_engine(settings.DATABASE_URL)
     async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -338,7 +416,8 @@ async def seed_dev():
             print(f"DEV SUPER_ADMIN {super_admin.username} already exists (id={super_admin.id})")
         schools = await seed_schools(session)
         users = await seed_users(session, schools)
-        await seed_books_and_copies(session, schools, users, super_admin)
+        books = await seed_books_and_copies(session, schools, users, super_admin)
+        await seed_reservations(session, schools, users, books)
     await engine.dispose()
     print('DEV seed completed')
 

@@ -28,6 +28,10 @@ from src.schemas import (
 from src.security import RoleChecker, get_current_user
 from src.settings import Settings
 from src.utils.pagination import paginate
+from src.utils.reservation_queue import (
+    lock_book_queue,
+    promote_copy_to_next_reservation,
+)
 
 router = APIRouter(prefix='/loans', tags=['loans'])
 
@@ -94,10 +98,11 @@ def _loan_public_query():
     )
 
 
-async def _resolve_copy(
+async def _resolve_copy(  # noqa: PLR0912
     payload: LoanCreate,
     session: AsyncSession,
     current_user: User,
+    for_update: bool = False,
 ) -> tuple[BookCopy, int]:
     if payload.internal_code is not None:
         copy_query = select(BookCopy).where(
@@ -117,6 +122,8 @@ async def _resolve_copy(
             copy_query = copy_query.where(
                 BookCopy.school_id == current_user.school_id
             )
+        if for_update:
+            copy_query = copy_query.with_for_update()
         copies = list((await session.scalars(copy_query)).all())
         if len(copies) > 1:
             raise HTTPException(
@@ -144,6 +151,8 @@ async def _resolve_copy(
             BookCopy.id == payload.copy_id,
             BookCopy.school_id == school_id,
         )
+    if for_update:
+        copy_query = copy_query.with_for_update()
     copy = await session.scalar(copy_query)
     if copy is None:
         raise HTTPException(
@@ -185,14 +194,42 @@ async def create_loan(
     session: Session,
     current_user: LibrarianOrAbove,
 ):
-    copy, school_id = await _resolve_copy(payload, session, current_user)
-    if copy.state != BooksStates.AVAILABLE:
-        raise HTTPException(
-            status_code=HTTPStatus.CONFLICT,
-            detail='Copy is not available for loan',
+    initial_copy, _ = await _resolve_copy(payload, session, current_user)
+    await lock_book_queue(session, initial_copy.book_id)
+    copy, school_id = await _resolve_copy(
+        payload, session, current_user, for_update=True
+    )
+    reservation = None
+    if payload.reservation_id is not None:
+        reservation = await session.scalar(
+            select(Reservation).where(
+                Reservation.id == payload.reservation_id
+            ).with_for_update()
         )
-
-    borrower = await _resolve_borrower(payload, school_id, session)
+        if (
+            reservation is None  # noqa: PLR0916
+            or reservation.status != ReservationStatus.READY
+            or reservation.book_id != copy.book_id
+            or reservation.school_id != school_id
+            or reservation.copy_id != copy.id
+            or copy.state != BooksStates.RESERVED
+        ):
+            raise HTTPException(
+                status_code=HTTPStatus.CONFLICT,
+                detail='Reservation is no longer available for pickup',
+            )
+        borrower = await _resolve_borrower(
+            LoanCreate(copy_id=copy.id, user_id=reservation.user_id),
+            school_id,
+            session,
+        )
+    else:
+        if copy.state != BooksStates.AVAILABLE:
+            raise HTTPException(
+                status_code=HTTPStatus.CONFLICT,
+                detail='Copy is not available for loan',
+            )
+        borrower = await _resolve_borrower(payload, school_id, session)
 
     # penalty / due_date
     penalty = await _get_penalty_days(session, borrower.id)
@@ -209,6 +246,9 @@ async def create_loan(
     # atomic: update copy state
     copy.state = BooksStates.BORROWED
     session.add(copy)
+    if reservation is not None:
+        reservation.status = ReservationStatus.FULFILLED
+        session.add(reservation)
 
     await session.commit()
     loan = await session.scalar(
@@ -223,10 +263,10 @@ async def return_loan(
     session: Session,
     current_user: LibrarianOrAbove,
 ):
-    loan = await session.scalar(
+    initial_loan = await session.scalar(
         _loan_public_query().where(Loan.id == loan_id)
     )
-    if not loan:
+    if not initial_loan:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Loan not found'
         )
@@ -234,13 +274,17 @@ async def return_loan(
     # tenant check for non super admin
     if (
         current_user.role != UserRole.SUPER_ADMIN
-        and loan.school_id != current_user.school_id
+        and initial_loan.school_id != current_user.school_id
     ):
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Loan not found'
         )
 
-    if loan.status != LoanStatus.ACTIVE:
+    await lock_book_queue(session, initial_loan.copy.book_id)
+    loan = await session.scalar(
+        _loan_public_query().where(Loan.id == loan_id).with_for_update()
+    )
+    if loan is None or loan.status != LoanStatus.ACTIVE:
         raise HTTPException(
             status_code=HTTPStatus.CONFLICT, detail='Loan is not active'
         )
@@ -260,7 +304,7 @@ async def return_loan(
 
     # handle copy state: check for active reservation for same book
     copy = await session.scalar(
-        select(BookCopy).where(BookCopy.id == loan.copy_id)
+        select(BookCopy).where(BookCopy.id == loan.copy_id).with_for_update()
     )
     if copy is None:
         raise HTTPException(
@@ -268,27 +312,18 @@ async def return_loan(
             detail='Copy not found',
         )
 
-    # find oldest active reservation for this book in same school
-    reservation = await session.scalar(
-        select(Reservation)
-        .where(
-            Reservation.book_id == copy.book_id,
-            Reservation.school_id == loan.school_id,
-            Reservation.status == ReservationStatus.ACTIVE,
-        )
-        .order_by(Reservation.created_at)
-    )
-    if reservation:
-        copy.state = BooksStates.RESERVED
-        reservation.status = ReservationStatus.FULFILLED
-        session.add(reservation)
-    else:
-        copy.state = BooksStates.AVAILABLE
+    reservation = await promote_copy_to_next_reservation(session, copy)
     session.add(copy)
 
     await session.commit()
     await session.refresh(loan)
-    return loan
+    result = await session.scalar(
+        _loan_public_query().where(Loan.id == loan.id)
+    )
+    if reservation is not None:
+        result.pickup_reservation_id = reservation.id
+        result.pickup_reserver_username = reservation.reserver.username
+    return result
 
 
 @router.get('/', response_model=PaginatedResponse[LoanPublic])

@@ -498,14 +498,16 @@ class LoanCreate(BaseModel):
     internal_code: str | None = Field(default=None, min_length=1)
     cpf: str | None = Field(default=None, min_length=1)
     school_id: int | None = None
+    reservation_id: int | None = None
 
     @model_validator(mode='after')
     def validate_identifiers(self):
+        reservation_pair = bool(self.internal_code and self.reservation_id)
         legacy_pair = self.copy_id is not None and self.user_id is not None
         public_pair = bool(self.internal_code and self.cpf)
-        if legacy_pair == public_pair:
+        if sum((legacy_pair, public_pair, reservation_pair)) != 1:
             raise ValueError(
-                'Informe internal_code e cpf ou copy_id e user_id'
+                'Informe internal_code e cpf, copy_id e user_id, ou internal_code e reservation_id'
             )
         if self.internal_code:
             self.internal_code = self.internal_code.strip()
@@ -532,6 +534,8 @@ class LoanPublic(BaseModel):
     borrower_username: str
     book_cover_url: str | None = None
     borrower_cpf_masked: str | None = None
+    pickup_reservation_id: int | None = None
+    pickup_reserver_username: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -553,6 +557,19 @@ class ReservationPublic(BaseModel):
     school_id: int
     status: ReservationStatus
     created_at: datetime
+    copy_id: int | None = None
+    book_title: str | None = None
+    book_cover_url: str | None = None
+    reserver_username: str | None = None
+    reserver_role: UserRole | None = None
+    reserver_is_active: bool | None = None
+    reserver_turma_numero: int | None = None
+    reserver_turma_letra: str | None = None
+    internal_code: str | None = None
+    queue_position: int | None = None
+    queue_total: int | None = None
+    ready_at: datetime | None = None
+    pickup_expires_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

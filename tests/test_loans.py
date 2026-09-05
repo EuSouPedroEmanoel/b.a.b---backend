@@ -5,10 +5,18 @@ from zoneinfo import ZoneInfo
 import pytest
 from freezegun import freeze_time
 
-from src.models import BookCopy, BooksStates, Loan, LoanStatus, User, UserRole
+from src.models import (
+    BookCopy,
+    BooksStates,
+    Loan,
+    LoanStatus,
+    ReservationStatus,
+    User,
+    UserRole,
+)
 from src.schemas import LoanCreate
 from src.security import get_password_hash
-from tests.factories import BookCopyFactory, BookFactory
+from tests.factories import BookCopyFactory, BookFactory, ReservationFactory
 
 
 @pytest.mark.asyncio
@@ -468,7 +476,7 @@ async def test_return_with_reservation_sets_reserved(
     assert res_resp.json()['status'] == 'active'
 
     copy_id2 = copy.id
-    # return loan -> copy should become RESERVED and reservation fulfilled
+    # return loan -> copy should become RESERVED and reservation ready
     ret = client.post(
         f'/loans/{loan_id}/return',
         headers={'Authorization': f'Bearer {token}'},
@@ -479,7 +487,7 @@ async def test_return_with_reservation_sets_reserved(
     db_copy = await session.get(BookCopy, copy_id2)
     assert db_copy.state == BooksStates.RESERVED
 
-    # reservation should be fulfilled
+    # reservation is ready, but only fulfilled once the pickup loan is created
     from sqlalchemy import select
 
     from src.models import Reservation
@@ -487,7 +495,80 @@ async def test_return_with_reservation_sets_reserved(
     res = await session.scalar(
         select(Reservation).where(Reservation.user_id == teacher.id)
     )
-    assert res.status.value == 'fulfilled'
+    assert res.status.value == 'ready'
+    assert res.copy_id == copy_id2
+
+    blocked = client.post(
+        '/loans/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'copy_id': copy_id2, 'user_id': student.id},
+    )
+    assert blocked.status_code == HTTPStatus.CONFLICT
+
+    reservation_id = res.id
+    pickup = client.post(
+        '/loans/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'internal_code': copy.code, 'reservation_id': reservation_id},
+    )
+    assert pickup.status_code == HTTPStatus.CREATED
+    session.expire_all()
+    fulfilled = await session.get(Reservation, reservation_id)
+    assert fulfilled.status.value == 'fulfilled'
+    assert (await session.get(BookCopy, copy_id2)).state == BooksStates.BORROWED
+
+
+@pytest.mark.asyncio
+async def test_pickup_requires_ready_reservation_and_assigned_copy(
+    session, client, user, token, student, book
+):
+    assigned_copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        state=BooksStates.RESERVED,
+        code='EX-PICKUP-ASSIGNED',
+    )
+    other_copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        state=BooksStates.RESERVED,
+        code='EX-PICKUP-OTHER',
+    )
+    session.add_all([assigned_copy, other_copy])
+    await session.flush()
+    reservation = ReservationFactory(
+        book_id=book.id,
+        user_id=student.id,
+        school_id=user.school_id,
+        status=ReservationStatus.ACTIVE,
+        copy_id=assigned_copy.id,
+    )
+    session.add(reservation)
+    await session.commit()
+
+    active_response = client.post(
+        '/loans/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={
+            'internal_code': assigned_copy.code,
+            'reservation_id': reservation.id,
+        },
+    )
+    assert active_response.status_code == HTTPStatus.CONFLICT
+
+    reservation.status = ReservationStatus.READY
+    await session.commit()
+    wrong_copy_response = client.post(
+        '/loans/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={
+            'internal_code': other_copy.code,
+            'reservation_id': reservation.id,
+        },
+    )
+    assert wrong_copy_response.status_code == HTTPStatus.CONFLICT
 
 
 def test_list_loans_pagination(client, user, token, student, book, session):
