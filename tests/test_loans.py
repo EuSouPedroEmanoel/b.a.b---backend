@@ -1,9 +1,18 @@
+import asyncio
 from datetime import datetime, timedelta
 from http import HTTPStatus
 from zoneinfo import ZoneInfo
 
 import pytest
+from fastapi import HTTPException
 from freezegun import freeze_time
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool
 
 from src.models import (
     BookCopy,
@@ -14,6 +23,7 @@ from src.models import (
     User,
     UserRole,
 )
+from src.routers.loans import create_loan
 from src.schemas import LoanCreate
 from src.security import get_password_hash
 from tests.factories import BookCopyFactory, BookFactory, ReservationFactory
@@ -197,6 +207,85 @@ async def test_create_loan_copy_not_available(
     )
     assert resp.status_code == HTTPStatus.CONFLICT
     assert 'not available' in resp.json()['detail']
+
+
+@pytest.mark.parametrize('concurrency', [2, 5, 10])
+@pytest.mark.asyncio
+async def test_concurrent_loans_same_copy_are_serialized(
+    session, engine, user, student, book, concurrency
+):
+    """Concurrent transactions cannot create two loans for one copy.
+
+    Each round increases the number of independent transactions and uses a
+    barrier immediately before the queue lock so the requests overlap in the
+    database rather than merely being scheduled close together.
+    """
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        state=BooksStates.AVAILABLE,
+        code='CONCURRENT-LOAN-1',
+    )
+    session.add(copy)
+    await session.commit()
+    await session.refresh(copy)
+
+    isolated_engine = create_async_engine(
+        engine.url,
+        connect_args={'prepare_threshold': None},
+        poolclass=NullPool,
+    )
+    session_factory = async_sessionmaker(
+        isolated_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    start_barrier = asyncio.Barrier(concurrency)
+    try:
+        async def submit():
+            async with session_factory() as tx:
+                librarian = await tx.get(User, user.id)
+                await tx.get(User, student.id)
+                await start_barrier.wait()
+                outcome = None
+                try:
+                    result = await create_loan(
+                        LoanCreate(copy_id=copy.id, user_id=student.id),
+                        tx,
+                        librarian,
+                    )
+                    outcome = ('created', result.id)
+                except HTTPException as exc:
+                    outcome = ('error', exc.status_code)
+                finally:
+                    if tx.in_transaction():
+                        await tx.rollback()
+                return outcome
+
+        tasks = [asyncio.create_task(submit()) for _ in range(concurrency)]
+        try:
+            outcomes = await asyncio.wait_for(
+                asyncio.gather(*tasks), timeout=30
+            )
+        except asyncio.TimeoutError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+    finally:
+        await isolated_engine.dispose()
+
+    assert sum(outcome[0] == 'created' for outcome in outcomes) == 1
+    assert sum(outcome[0] == 'error' for outcome in outcomes) == concurrency - 1
+    assert all(
+        outcome[1] == HTTPStatus.CONFLICT
+        for outcome in outcomes
+        if outcome[0] == 'error'
+    )
+    assert await session.scalar(
+        select(func.count(Loan.id)).where(
+            Loan.copy_id == copy.id, Loan.status == LoanStatus.ACTIVE
+        )
+    ) == 1
 
 
 @pytest.mark.asyncio

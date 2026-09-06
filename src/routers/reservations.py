@@ -3,6 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -30,6 +31,14 @@ from src.utils.reservation_queue import (
 )
 
 router = APIRouter(prefix='/reservations', tags=['reservations'])
+
+
+def _is_active_reservation_conflict(error: IntegrityError) -> bool:
+    """Identify only the partial unique index violation we handle as 409."""
+    constraint_name = getattr(getattr(error, 'orig', None), 'diag', None)
+    constraint_name = getattr(constraint_name, 'constraint_name', None)
+    return constraint_name == 'uq_reservations_active_user_book_school'
+
 
 Session = Annotated[AsyncSession, Depends(get_session)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
@@ -153,7 +162,16 @@ async def create_reservation(
         status=ReservationStatus.ACTIVE,
     )
     session.add(reservation)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as error:
+        await session.rollback()
+        if _is_active_reservation_conflict(error):
+            raise HTTPException(
+                status_code=HTTPStatus.CONFLICT,
+                detail='Active reservation already exists',
+            ) from error
+        raise
     await session.refresh(reservation)
     await session.refresh(
         reservation, attribute_names=['book', 'reserver', 'copy']

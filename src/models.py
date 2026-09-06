@@ -7,12 +7,14 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     ForeignKey,
+    Index,
     String,
     Table,
     UniqueConstraint,
     case,
     func,
     select,
+    text,
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.ext.hybrid import hybrid_property
@@ -482,6 +484,16 @@ class Loan:
 @table_registry.mapped_as_dataclass()
 class Reservation:
     __tablename__ = 'reservations'
+    __table_args__ = (
+        Index(
+            'uq_reservations_active_user_book_school',
+            'user_id',
+            'book_id',
+            'school_id',
+            unique=True,
+            postgresql_where=text("status IN ('active', 'ready')"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         init=False, primary_key=True, autoincrement=True

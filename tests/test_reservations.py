@@ -1,8 +1,19 @@
+import asyncio
 from http import HTTPStatus
 
 import pytest
+from fastapi import HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool
 
-from src.models import BooksStates, ReservationStatus
+from src.models import BooksStates, Reservation, ReservationStatus, User
+from src.routers.reservations import create_reservation
+from src.schemas import ReservationCreate
 from tests.factories import BookCopyFactory, ReservationFactory
 
 
@@ -165,6 +176,91 @@ async def test_reservation_duplicate_fails(
         json={'book_id': book.id},
     )
     assert second.status_code == HTTPStatus.CONFLICT
+
+
+@pytest.mark.parametrize('concurrency', [2, 5, 10])
+@pytest.mark.asyncio
+async def test_concurrent_reservations_same_reader_are_serialized(
+    session, engine, user, student, book, concurrency
+):
+    """Concurrent transactions cannot create the same active reservation.
+
+    The barrier makes every round genuinely simultaneous at the application
+    lock boundary while each request uses an independent database session.
+    """
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        state=BooksStates.BORROWED,
+    )
+    session.add(copy)
+    await session.commit()
+
+    # Synchronize immediately before the database lock so both request scopes
+    # genuinely overlap instead of merely running sequentially by accident.
+    # Disable psycopg server-side prepared statements for these long-lived
+    # independent sessions; the fixture recreates tables between tests.
+    isolated_engine = create_async_engine(
+        engine.url,
+        connect_args={'prepare_threshold': None},
+        poolclass=NullPool,
+    )
+    session_factory = async_sessionmaker(
+        isolated_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    start_barrier = asyncio.Barrier(concurrency)
+    try:
+        async def submit():
+            async with session_factory() as tx:
+                reader = await tx.get(User, student.id)
+                await start_barrier.wait()
+                outcome = None
+                try:
+                    result = await create_reservation(
+                        ReservationCreate(book_id=book.id), tx, reader
+                    )
+                    outcome = ('created', result['id'])
+                except HTTPException as exc:
+                    outcome = ('error', exc.status_code)
+                finally:
+                    if tx.in_transaction():
+                        await tx.rollback()
+                return outcome
+
+        tasks = [asyncio.create_task(submit()) for _ in range(concurrency)]
+        try:
+            outcomes = await asyncio.wait_for(
+                asyncio.gather(*tasks), timeout=30
+            )
+        except asyncio.TimeoutError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+    finally:
+        await isolated_engine.dispose()
+
+    assert sum(outcome[0] == 'created' for outcome in outcomes) == 1
+    assert sum(outcome[0] == 'error' for outcome in outcomes) == concurrency - 1
+    assert all(
+        outcome[1] == HTTPStatus.CONFLICT
+        for outcome in outcomes
+        if outcome[0] == 'error'
+    )
+
+    persisted = await session.scalar(
+        select(func.count(Reservation.id)).where(
+            Reservation.book_id == book.id,
+            Reservation.user_id == student.id,
+            Reservation.school_id == student.school_id,
+            Reservation.status.in_([
+                ReservationStatus.ACTIVE,
+                ReservationStatus.READY,
+            ]),
+        )
+    )
+    assert persisted == 1
 
 
 @pytest.mark.asyncio

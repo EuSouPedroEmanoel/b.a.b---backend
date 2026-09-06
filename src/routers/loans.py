@@ -123,7 +123,13 @@ async def _resolve_copy(  # noqa: PLR0912
                 BookCopy.school_id == current_user.school_id
             )
         if for_update:
-            copy_query = copy_query.with_for_update()
+            # The copy may already be present in this session's identity map
+            # from the initial lookup.  Refresh it after waiting for the row
+            # lock so a concurrent loan cannot make us use stale AVAILABLE
+            # state.
+            copy_query = copy_query.with_for_update().execution_options(
+                populate_existing=True
+            )
         copies = list((await session.scalars(copy_query)).all())
         if len(copies) > 1:
             raise HTTPException(
@@ -152,7 +158,10 @@ async def _resolve_copy(  # noqa: PLR0912
             BookCopy.school_id == school_id,
         )
     if for_update:
-        copy_query = copy_query.with_for_update()
+        # Refresh an identity-mapped copy after acquiring its row lock.
+        copy_query = copy_query.with_for_update().execution_options(
+            populate_existing=True
+        )
     copy = await session.scalar(copy_query)
     if copy is None:
         raise HTTPException(
