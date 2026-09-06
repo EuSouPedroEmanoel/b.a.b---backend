@@ -1,6 +1,6 @@
 import asyncio
 import random
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -11,6 +11,8 @@ from src.models import (
     BookCopy,
     BooksStates,
     Genre,
+    Loan,
+    LoanStatus,
     Reservation,
     ReservationStatus,
     School,
@@ -393,6 +395,81 @@ async def seed_reservations(
     )
 
 
+async def seed_book_one_history(
+    session: AsyncSession,
+    schools: list[School],
+    users: dict[str, User],
+    books: list[Book],
+) -> None:
+    """Add a substantial, idempotent history for the first development book."""
+    if not books or not schools:
+        return
+    book = books[0]
+    copies = (await session.scalars(
+        select(BookCopy).where(BookCopy.book_id == book.id).order_by(BookCopy.id)
+    )).all()
+    readers = [
+        user for username, user in users.items()
+        if username.startswith(('student_dev', 'teacher_dev'))
+    ]
+    if not copies or not readers:
+        return
+
+    loan_count = len((await session.scalars(
+        select(Loan.id).join(BookCopy).where(BookCopy.book_id == book.id)
+    )).all())
+    now = datetime.now()
+    for index in range(loan_count, 24):
+        copy = copies[index % len(copies)]
+        reader = readers[index % len(readers)]
+        borrowed_at = now - timedelta(days=30 + (index * 9))
+        loan = Loan(
+            copy_id=copy.id,
+            user_id=reader.id,
+            school_id=copy.school_id,
+            due_date=borrowed_at + timedelta(days=14),
+            returned_at=borrowed_at + timedelta(days=12 + (index % 8)),
+            late_days=max(0, (index % 8) - 2),
+            status=LoanStatus.RETURNED,
+        )
+        session.add(loan)
+        await session.flush()
+        loan.borrowed_at = borrowed_at
+        loan.created_at = borrowed_at
+        loan.updated_at = borrowed_at
+    await session.commit()
+
+    historical_statuses = (
+        ReservationStatus.FULFILLED,
+        ReservationStatus.CANCELLED,
+        ReservationStatus.EXPIRED,
+    )
+    historical_count = len((await session.scalars(
+        select(Reservation.id).where(
+            Reservation.book_id == book.id,
+            Reservation.status.in_(historical_statuses),
+        )
+    )).all())
+    for index in range(historical_count, 18):
+        reader = readers[index % len(readers)]
+        created_at = now - timedelta(days=20 + (index * 11))
+        status = historical_statuses[index % len(historical_statuses)]
+        reservation = Reservation(
+            book_id=book.id,
+            user_id=reader.id,
+            school_id=reader.school_id or schools[0].id,
+            status=status,
+        )
+        session.add(reservation)
+        await session.flush()
+        reservation.created_at = created_at
+        reservation.updated_at = created_at
+        if status == ReservationStatus.FULFILLED:
+            reservation.ready_at = created_at + timedelta(days=5)
+    await session.commit()
+    print(f'Book {book.id} history ready: 24 loans and 18 reservations')
+
+
 async def seed_dev():
     engine = create_async_engine(settings.DATABASE_URL)
     async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -418,6 +495,7 @@ async def seed_dev():
         users = await seed_users(session, schools)
         books = await seed_books_and_copies(session, schools, users, super_admin)
         await seed_reservations(session, schools, users, books)
+        await seed_book_one_history(session, schools, users, books)
     await engine.dispose()
     print('DEV seed completed')
 

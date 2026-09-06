@@ -2,9 +2,14 @@ from http import HTTPStatus
 
 import pytest
 
-from src.models import BooksStates
+from src.models import BooksStates, LoanStatus, ReservationStatus
 from src.schemas import BooksPublic
-from tests.factories import BookCopyFactory, BookFactory
+from tests.factories import (
+    BookCopyFactory,
+    BookFactory,
+    LoanFactory,
+    ReservationFactory,
+)
 
 
 def _expected_books_json(books, derived_state='available'):
@@ -338,6 +343,114 @@ async def test_list_books_filter_state_should_return_borrowed_books(
     assert sorted(ids) == sorted(b.id for b in borrowed_books)
     for item in response.json()['items']:
         assert item['derived_state'] == 'borrowed'
+
+
+@pytest.mark.asyncio
+async def test_student_book_state_filters_are_personal_and_hide_lost_archived(
+    session, student, user, client, student_token
+):
+    available, own_borrowed, other_borrowed, own_reserved, other_reserved, lost, archived = (
+        BookFactory.create_batch(7, user_id=user.id)
+    )
+    session.add_all(
+        [
+            available,
+            own_borrowed,
+            other_borrowed,
+            own_reserved,
+            other_reserved,
+            lost,
+            archived,
+        ]
+    )
+    await session.commit()
+
+    copies = [
+        BookCopyFactory(
+            book_id=available.id,
+            added_by=user.id,
+            school_id=student.school_id,
+        ),
+        BookCopyFactory(
+            book_id=own_borrowed.id,
+            added_by=user.id,
+            school_id=student.school_id,
+            state=BooksStates.BORROWED,
+        ),
+        BookCopyFactory(
+            book_id=other_borrowed.id,
+            added_by=user.id,
+            school_id=student.school_id,
+            state=BooksStates.BORROWED,
+        ),
+        BookCopyFactory(
+            book_id=own_reserved.id,
+            added_by=user.id,
+            school_id=student.school_id,
+            state=BooksStates.RESERVED,
+        ),
+        BookCopyFactory(
+            book_id=other_reserved.id,
+            added_by=user.id,
+            school_id=student.school_id,
+            state=BooksStates.RESERVED,
+        ),
+        BookCopyFactory(
+            book_id=lost.id,
+            added_by=user.id,
+            school_id=student.school_id,
+            state=BooksStates.LOST,
+        ),
+    ]
+    session.add_all(copies)
+    await session.flush()
+    session.add_all(
+        [
+            LoanFactory(
+                copy_id=copies[1].id,
+                user_id=student.id,
+                school_id=student.school_id,
+                status=LoanStatus.ACTIVE,
+            ),
+            LoanFactory(
+                copy_id=copies[2].id,
+                user_id=user.id,
+                school_id=student.school_id,
+                status=LoanStatus.ACTIVE,
+            ),
+            ReservationFactory(
+                book_id=own_reserved.id,
+                user_id=student.id,
+                school_id=student.school_id,
+                status=ReservationStatus.ACTIVE,
+            ),
+            ReservationFactory(
+                book_id=other_reserved.id,
+                user_id=user.id,
+                school_id=student.school_id,
+                status=ReservationStatus.ACTIVE,
+            ),
+        ]
+    )
+    await session.commit()
+
+    headers = {'Authorization': f'Bearer {student_token}'}
+    borrowed = client.get('/books/?state=borrowed', headers=headers)
+    reserved = client.get('/books/?state=reserved', headers=headers)
+    lost_response = client.get('/books/?state=lost', headers=headers)
+    archived_response = client.get('/books/?state=archived', headers=headers)
+    all_books = client.get('/books/', headers=headers)
+
+    assert [item['id'] for item in borrowed.json()['items']] == [own_borrowed.id]
+    assert [item['id'] for item in reserved.json()['items']] == [own_reserved.id]
+    assert lost_response.json()['items'] == []
+    assert archived_response.json()['items'] == []
+    visible_ids = {item['id'] for item in all_books.json()['items']}
+    assert available.id in visible_ids
+    assert own_borrowed.id in visible_ids
+    assert own_reserved.id in visible_ids
+    assert lost.id not in visible_ids
+    assert archived.id not in visible_ids
 
 
 def test_delete_book_error(client, super_admin_token):

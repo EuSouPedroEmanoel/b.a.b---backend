@@ -4,7 +4,7 @@ from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import exists, func, select
+from sqlalchemy import exists, false, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,7 +17,9 @@ from src.models import (
     BooksStates,
     Genre,
     Loan,
+    LoanStatus,
     Reservation,
+    ReservationStatus,
     User,
     UserRole,
     book_authors,
@@ -832,7 +834,42 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
                     break
         cond_avail_q = None
         if matched_state is not None:
-            cond_avail_q = Book.derived_state_expr(school_scope) == matched_state
+            if user.role in {UserRole.STUDENT, UserRole.TEACHER}:
+                # Para usuários finais, a busca por estado pessoal deve
+                # considerar somente seus próprios empréstimos/reservas.
+                if matched_state == BooksStates.BORROWED:
+                    cond_avail_q = exists().where(
+                        (Loan.copy_id == BookCopy.id)
+                        & (BookCopy.book_id == Book.id)
+                        & (BookCopy.school_id == user.school_id)
+                        & (Loan.user_id == user.id)
+                        & (Loan.school_id == user.school_id)
+                        & Loan.status.in_([
+                            LoanStatus.ACTIVE,
+                            LoanStatus.OVERDUE,
+                        ])
+                    )
+                elif matched_state == BooksStates.RESERVED:
+                    cond_avail_q = exists().where(
+                        (Reservation.book_id == Book.id)
+                        & (Reservation.user_id == user.id)
+                        & (Reservation.school_id == user.school_id)
+                        & Reservation.status.in_([
+                            ReservationStatus.ACTIVE,
+                            ReservationStatus.READY,
+                        ])
+                    )
+                elif matched_state == BooksStates.AVAILABLE:
+                    cond_avail_q = (
+                        Book.derived_state_expr(school_scope)
+                        == BooksStates.AVAILABLE
+                    )
+                else:
+                    cond_avail_q = false()
+            else:
+                cond_avail_q = (
+                    Book.derived_state_expr(school_scope) == matched_state
+                )
         if cond_avail_q is not None:
             sttm = sttm.where(
                 cond_title | cond_isbn | cond_copy | cond_genre_q | cond_author_q | cond_avail_q
@@ -846,13 +883,59 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
         sttm = sttm.where(Book.title.contains(book_filter.title))
     if book_filter.description:
         sttm = sttm.where(Book.description.contains(book_filter.description))
-    if book_filter.state:
+    # Estados de empréstimo/reserva são pessoais para alunos e professores.
+    # A visibilidade do inventário continua baseada no acervo da escola, mas
+    # nunca expõe livros perdidos/arquivados a esses perfis.
+    if user.role in {UserRole.STUDENT, UserRole.TEACHER}:
+        derived_state = Book.derived_state_expr(school_scope)
+        visible_inventory = derived_state.in_([
+            BooksStates.AVAILABLE,
+            BooksStates.RESERVED,
+            BooksStates.BORROWED,
+        ])
+        own_loan = exists().where(
+            (Loan.copy_id == BookCopy.id)
+            & (BookCopy.book_id == Book.id)
+            & (BookCopy.school_id == user.school_id)
+            & (Loan.user_id == user.id)
+            & (Loan.school_id == user.school_id)
+            & Loan.status.in_([
+                LoanStatus.ACTIVE,
+                LoanStatus.OVERDUE,
+            ])
+        )
+        own_reservation = exists().where(
+            (Reservation.book_id == Book.id)
+            & (Reservation.user_id == user.id)
+            & (Reservation.school_id == user.school_id)
+            & Reservation.status.in_([
+                ReservationStatus.ACTIVE,
+                ReservationStatus.READY,
+            ])
+        )
+        sttm = sttm.where(visible_inventory)
+        if book_filter.state == BooksStates.AVAILABLE:
+            sttm = sttm.where(derived_state == BooksStates.AVAILABLE)
+        elif book_filter.state == BooksStates.BORROWED:
+            sttm = sttm.where(own_loan)
+        elif book_filter.state == BooksStates.RESERVED:
+            sttm = sttm.where(own_reservation)
+        elif book_filter.state in {
+            BooksStates.LOST,
+            BooksStates.ARCHIVED,
+        }:
+            sttm = sttm.where(false())
+        elif book_filter.state is None:
+            # Sem filtro, o aluno vê o acervo disponível e seus próprios
+            # empréstimos/reservas para não perder acesso a esses registros.
+            sttm = sttm.where(
+                (derived_state == BooksStates.AVAILABLE)
+                | own_loan
+                | own_reservation
+            )
+    elif book_filter.state:
         sttm = sttm.where(
             Book.derived_state_expr(school_scope) == book_filter.state
-        )
-    elif user.role == UserRole.STUDENT and not book_filter.q:
-        sttm = sttm.where(
-            Book.derived_state_expr(school_scope) == BooksStates.AVAILABLE
         )
     if book_filter.isbn:
         clean_isbn = book_filter.isbn.replace('-', '').replace(' ', '')
