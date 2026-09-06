@@ -1,6 +1,6 @@
 from http import HTTPStatus
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 from starlette.responses import JSONResponse
@@ -18,6 +18,7 @@ from src.routers import (
     users,
 )
 from src.schemas import Message
+from src.security import require_account
 
 app = FastAPI()
 app.state.limiter = limiter
@@ -46,14 +47,16 @@ async def rate_limit_handler(request, exc):
 
 
 app.include_router(auth.router)
-app.include_router(users.router)
+app.include_router(users.router, dependencies=[Depends(require_account)])
 app.include_router(books.router)
-app.include_router(copies.router)
+app.include_router(copies.router, dependencies=[Depends(require_account)])
 app.include_router(genres.router)
 app.include_router(authors.router)
-app.include_router(schools.router)
-app.include_router(loans.router)
-app.include_router(reservations.router)
+app.include_router(schools.router, dependencies=[Depends(require_account)])
+app.include_router(loans.router, dependencies=[Depends(require_account)])
+app.include_router(
+    reservations.router, dependencies=[Depends(require_account)]
+)
 
 
 @app.get('/', status_code=HTTPStatus.OK, response_model=Message)

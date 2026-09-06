@@ -11,10 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
 from src.limiter import limiter
-from src.models import RevokedToken, User
-from src.schemas import Message, RefreshRequest, Token, TokenPair
+from src.models import RevokedToken, School, User
+from src.schemas import (
+    GuestAccessRequest,
+    GuestSchoolPublic,
+    Message,
+    RefreshRequest,
+    Token,
+    TokenPair,
+)
 from src.security import (
     create_access_token,
+    create_guest_token,
     create_token_pair,
     get_current_user,
     verify_password,
@@ -28,6 +36,40 @@ Session = Annotated[AsyncSession, Depends(get_session)]
 OAuthForm = Annotated[OAuth2PasswordRequestForm, Depends()]
 
 settings = Settings()
+
+
+@router.get('/guest/schools', response_model=list[GuestSchoolPublic])
+async def list_guest_schools(session: Session):
+    return (
+        await session.scalars(
+            select(School)
+            .where(School.is_active.is_(True))
+            .order_by(School.name)
+        )
+    ).all()
+
+
+@router.post('/guest', response_model=Token)
+@limiter.limit('20/minute')
+async def create_guest_access_token(
+    request: Request,
+    payload: GuestAccessRequest,
+    session: Session,
+):
+    school = await session.scalar(
+        select(School).where(
+            School.code == payload.school_code.strip(),
+            School.is_active.is_(True),
+        )
+    )
+    if not school:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='School not found'
+        )
+    return {
+        'access_token': create_guest_token(school.code),
+        'token_type': 'Bearer',
+    }
 
 
 @router.post('/token', response_model=TokenPair)

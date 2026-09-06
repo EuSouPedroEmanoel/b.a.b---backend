@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from http import HTTPStatus
 from zoneinfo import ZoneInfo
@@ -11,12 +12,25 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
-from src.models import RevokedToken, User, UserRole
+from src.models import RevokedToken, School, User, UserRole
 from src.settings import Settings
 
 pwd_context = PasswordHash.recommended()
 settings = Settings()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl='auth/token')
+
+
+@dataclass(frozen=True)
+class GuestPrincipal:
+    """Request-only principal. It is never persisted as a User."""
+
+    role: str
+    school_id: int
+    school_code: str
+
+
+def is_guest(user: User | GuestPrincipal) -> bool:
+    return isinstance(user, GuestPrincipal)
 
 
 def get_password_hash(password: str):
@@ -41,6 +55,23 @@ def create_access_token(data: dict):
     )
 
     return encoded_jwt
+
+
+def create_guest_token(school_code: str) -> str:
+    expire = datetime.now(tz=ZoneInfo('UTC')) + timedelta(
+        minutes=settings.GUEST_TOKEN_EXPIRE_MINUTES
+    )
+    return encode(
+        {
+            'sub': 'guest',
+            'role': 'guest',
+            'school_code': school_code,
+            'type': 'guest',
+            'exp': expire,
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
 
 
 def create_refresh_token(data: dict):
@@ -73,7 +104,7 @@ async def _is_token_revoked(session: AsyncSession, jti: str) -> bool:
 async def get_current_user(
     session: AsyncSession = Depends(get_session),
     token: str = Depends(oauth2_scheme),
-):
+) -> User | GuestPrincipal:
     credential_exception = HTTPException(
         status_code=HTTPStatus.UNAUTHORIZED,
         detail='Could not validate credentials',
@@ -86,7 +117,8 @@ async def get_current_user(
             settings.SECRET_KEY,
             algorithms=[settings.ALGORITHM],
         )
-        if payload.get('type') not in {None, 'access'}:
+        token_type = payload.get('type')
+        if token_type not in {None, 'access', 'guest'}:
             # refresh tokens must not be used as access tokens
             raise credential_exception
         subject_username = payload.get('sub')
@@ -97,6 +129,25 @@ async def get_current_user(
 
     except ExpiredSignatureError:
         raise credential_exception
+
+    if token_type == 'guest':
+        school_code = payload.get('school_code')
+        if (
+            subject_username != 'guest'
+            or payload.get('role') != 'guest'
+            or not isinstance(school_code, str)
+        ):
+            raise credential_exception
+        school = await session.scalar(
+            select(School).where(
+                School.code == school_code, School.is_active.is_(True)
+            )
+        )
+        if not school:
+            raise credential_exception
+        return GuestPrincipal(
+            role='guest', school_id=school.id, school_code=school.code
+        )
 
     sttm = select(User).where(User.username == subject_username)
     user = await session.scalar(sttm)
@@ -113,11 +164,29 @@ async def get_current_user(
     return user
 
 
+async def require_account(
+    user: User | GuestPrincipal = Depends(get_current_user),
+) -> User:
+    if is_guest(user):
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='Entre com sua conta para continuar.',
+        )
+    return user
+
+
 class RoleChecker:
     def __init__(self, allowed_roles: list[UserRole]):
         self.allowed_roles = allowed_roles
 
-    async def __call__(self, user: User = Depends(get_current_user)) -> User:
+    async def __call__(
+        self, user: User | GuestPrincipal = Depends(get_current_user)
+    ) -> User:
+        if is_guest(user):
+            raise HTTPException(
+                status_code=HTTPStatus.FORBIDDEN,
+                detail='Entre com sua conta para continuar.',
+            )
         if user.role not in self.allowed_roles:
             raise HTTPException(
                 status_code=HTTPStatus.FORBIDDEN,

@@ -4,7 +4,7 @@ from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import exists, false, func, select
+from sqlalchemy import exists, false, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -28,6 +28,7 @@ from src.models import (
 from src.schemas import (
     BookCopyPublic,
     BookCopySchema,
+    GuestBookPublic,
     BookLookupResponse,
     BookResolveResponse,
     BooksPublic,
@@ -38,7 +39,7 @@ from src.schemas import (
     Message,
     PaginatedResponse,
 )
-from src.security import RoleChecker, get_current_user
+from src.security import GuestPrincipal, RoleChecker, get_current_user, is_guest
 from src.utils.apis import get_google_book_info
 from src.utils.authors import display_name_author, slugify_author
 from src.utils.genres import display_name_genre, slugify_genre
@@ -208,7 +209,7 @@ async def _resolve_authors_for_book(  # pragma: no cover
 
 
 Session = Annotated[AsyncSession, Depends(get_session)]
-CurrentUser = Annotated[User, Depends(get_current_user)]
+CurrentUser = Annotated[User | GuestPrincipal, Depends(get_current_user)]
 StaffOnly = Annotated[
     User,
     Depends(
@@ -329,6 +330,9 @@ async def resolve_book(
         and len(clean) >= ISBN_MIN_LENGTH
     )
 
+    if is_guest(user) and not is_isbn:
+        return BookResolveResponse(kind='title', book_id=None)
+
     # 1) ISBN primeiro — match exato normalizado (com/sem hífens)
     if is_isbn:
         existing = await session.scalar(
@@ -346,6 +350,17 @@ async def resolve_book(
                     existing = b
                     break
         if existing:
+            if is_guest(user):
+                in_school = await session.scalar(
+                    select(BookCopy.id)
+                    .where(
+                        BookCopy.book_id == existing.id,
+                        BookCopy.school_id == user.school_id,
+                    )
+                    .limit(1)
+                )
+                if in_school is None:
+                    return BookResolveResponse(kind='none', book_id=None)
             return BookResolveResponse(kind='isbn', book_id=existing.id)
         return BookResolveResponse(kind='none', book_id=None)
 
@@ -628,6 +643,24 @@ def _book_public(book: Book) -> dict:
     }
 
 
+def _guest_book_public(book: Book) -> dict:
+    public = _book_public(book)
+    return {
+        key: public[key]
+        for key in (
+            'id',
+            'title',
+            'description',
+            'isbn',
+            'cover_url',
+            'published_date',
+            'is_active',
+            'genres',
+            'authors',
+        )
+    }
+
+
 async def _derived_states(
     session: AsyncSession,
     book_ids: list[int],
@@ -691,7 +724,9 @@ async def _copies_counts(
     return total_map, avail_map
 
 
-@router.get('/', response_model=PaginatedResponse[BooksPublic])
+@router.get(
+    '/', response_model=PaginatedResponse[BooksPublic | GuestBookPublic]
+)
 async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
     session: Session,
     user: CurrentUser,
@@ -754,6 +789,17 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
     else:
         sttm = sttm.where(Book.is_active.is_(book_filter.is_active))
 
+    # Visitantes só podem receber livros que podem abrir no seu acervo.
+    # Isso mantém a listagem alinhada ao GET /books/{id}, que não expõe
+    # livros sem exemplar ou pertencentes exclusivamente a outra escola.
+    if is_guest(user):
+        sttm = sttm.where(
+            exists().where(
+                (BookCopy.book_id == Book.id)
+                & (BookCopy.school_id == user.school_id)
+            )
+        )
+
     # Tenant isolation: school users see books with copies in their school + livros órfãos (0 cópias) recém-cadastrados  # noqa: E501
     if user.role != UserRole.SUPER_ADMIN:
         if user.school_id is None:
@@ -761,12 +807,19 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
                 status_code=HTTPStatus.FORBIDDEN,
                 detail='User without school cannot list books',
             )
+        in_school = exists().where(
+            (BookCopy.book_id == Book.id)
+            & (BookCopy.school_id == user.school_id)
+        )
         sttm = sttm.where(
-            exists().where(
-                (BookCopy.book_id == Book.id)
-                & (BookCopy.school_id == user.school_id)
-            )
-            | ~exists().where(BookCopy.book_id == Book.id)
+            in_school if is_guest(user)
+            else in_school | ~exists().where(BookCopy.book_id == Book.id)
+        )
+
+    if is_guest(user) and book_filter.internal_code:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='Guest access does not allow internal copy searches',
         )
 
     if book_filter.q:
@@ -774,7 +827,7 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
         clean = raw.replace('-', '').replace(' ', '')
         cond_title = Book.title.ilike(f'%{raw}%')
         cond_isbn = (Book.isbn == raw) | (Book.isbn == clean)
-        cond_copy = exists().where(
+        cond_copy = false() if is_guest(user) else exists().where(
             (BookCopy.book_id == Book.id) & (BookCopy.code == raw)
         )
         if user.role != UserRole.SUPER_ADMIN:
@@ -1002,9 +1055,10 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
     book_ids = [b.id for b in items]
     derived_list = await _derived_states(session, book_ids, school_scope)
     total_map, avail_map = await _copies_counts(session, book_ids, school_scope)  # noqa: E501
+    book_mapper = _guest_book_public if is_guest(user) else _book_public
     result = [
         {
-            **_book_public(b),
+            **book_mapper(b),
             'derived_state': st,
             'total_copies': total_map.get(b.id, 0),
             'available_copies': avail_map.get(b.id, 0),
@@ -1053,14 +1107,17 @@ def _diversify_books(  # pragma: no cover
     return result
 
 
-@router.get('/{book_id}/recommendations', response_model=list[BooksPublic])
+@router.get(
+    '/{book_id}/recommendations',
+    response_model=list[BooksPublic | GuestBookPublic],
+)
 async def get_recommendations(  # pragma: no cover
     book_id: int,
     session: Session,
     user: CurrentUser,
     limit: Annotated[int, Query(ge=1, le=50)] = 16,
 ):
-    """Pipeline 3 camadas: afinidade pessoal (~50%) + contexto livro (~30%) + tendências globais (~20%)."""
+    """Personalized recommendations for accounts and contextual ones for guests."""
     school_scope = (
         None if user.role == UserRole.SUPER_ADMIN else user.school_id
     )
@@ -1097,6 +1154,56 @@ async def get_recommendations(  # pragma: no cover
                 raise HTTPException(
                     status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
                 )
+
+    if is_guest(user):
+        genre_ids = [genre.id for genre in target.genres or []]
+        author_ids = [author.id for author in target.authors or []]
+        contextual = (
+            select(Book)
+            .options(selectinload(Book.genres), selectinload(Book.authors))
+            .where(Book.id != target.id, Book.is_active.is_(True))
+        )
+        contextual = contextual.where(
+            or_(
+                exists().where(
+                    (book_genres.c.book_id == Book.id)
+                    & book_genres.c.genre_id.in_(genre_ids)
+                )
+                if genre_ids
+                else false(),
+                exists().where(
+                    (book_authors.c.book_id == Book.id)
+                    & book_authors.c.author_id.in_(author_ids)
+                )
+                if author_ids
+                else false(),
+            )
+        )
+        # Recomendações Guest seguem a mesma visibilidade do detalhe:
+        # somente livros com exemplar na escola vinculada ao token.
+        contextual = contextual.where(
+            exists().where(
+                (BookCopy.book_id == Book.id)
+                & (BookCopy.school_id == user.school_id)
+            )
+        ).order_by(Book.title).limit(limit)
+        books = (await session.scalars(contextual)).all()
+        book_ids = [book.id for book in books]
+        derived_states = await _derived_states(
+            session, book_ids, user.school_id
+        )
+        total_map, available_map = await _copies_counts(
+            session, book_ids, user.school_id
+        )
+        return [
+            {
+                **_guest_book_public(book),
+                'derived_state': state,
+                'total_copies': total_map.get(book.id, 0),
+                'available_copies': available_map.get(book.id, 0),
+            }
+            for book, state in zip(books, derived_states)
+        ]
 
     # quotas
     affinity_quota = int(limit * 0.5)
@@ -1389,7 +1496,7 @@ async def get_recommendations(  # pragma: no cover
     return result
 
 
-@router.get('/{book_id}', response_model=BooksPublic)
+@router.get('/{book_id}', response_model=BooksPublic | GuestBookPublic)
 async def get_book(
     book_id: int,
     session: Session,
@@ -1415,6 +1522,10 @@ async def get_book(
         has_any_copy = await session.scalar(
             select(BookCopy.id).where(BookCopy.book_id == book.id).limit(1)
         )
+        if is_guest(user) and has_any_copy is None:
+            raise HTTPException(
+                status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
+            )
         if has_any_copy is not None:
             in_school = await session.scalar(
                 select(BookCopy.id)
@@ -1431,8 +1542,9 @@ async def get_book(
 
     derived = (await _derived_states(session, [book.id], school_scope))[0]
     total_map, avail_map = await _copies_counts(session, [book.id], school_scope)  # noqa: E501
+    book_mapper = _guest_book_public if is_guest(user) else _book_public
     return {
-        **_book_public(book),
+        **book_mapper(book),
         'derived_state': derived,
         'total_copies': total_map.get(book.id, 0),
         'available_copies': avail_map.get(book.id, 0),

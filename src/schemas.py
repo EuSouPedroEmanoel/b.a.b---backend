@@ -239,6 +239,19 @@ class SchoolList(BaseModel):
 
 
 # endregion
+# region - Guest access
+class GuestSchoolPublic(BaseModel):
+    code: str
+    name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GuestAccessRequest(BaseModel):
+    school_code: str = Field(min_length=2, max_length=120)
+
+
+# endregion
 # region - Token
 class Token(BaseModel):
     token_type: str
@@ -443,6 +456,21 @@ class BooksPublic(BooksSchema):
     author_names: list[str] = Field(default_factory=list)  # type: ignore[assignment]
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class GuestBookPublic(BaseModel):
+    id: int
+    title: str | None = None
+    description: str | None = None
+    isbn: str | None = None
+    cover_url: str | None = None
+    published_date: date | None = None
+    is_active: bool = True
+    derived_state: BooksStates = BooksStates.ARCHIVED
+    total_copies: int = 0
+    available_copies: int = 0
+    genres: list[GenrePublic] = Field(default_factory=list)
+    authors: list[AuthorPublic] = Field(default_factory=list)
 
 
 class BookList(BaseModel):
