@@ -5,6 +5,7 @@ import pytest
 from src.models import User, UserRole
 from src.schemas import UserPublic
 from src.security import get_password_hash
+from src.utils.cpf import cpf_storage_values
 
 
 def test_create_user(client, school, super_admin_token):
@@ -25,6 +26,79 @@ def test_create_user(client, school, super_admin_token):
     assert response.json()['username'] == 'alice'
     assert response.json()['email'] == 'alice@exemple.com'
     assert response.json()['school_id'] == school.id
+    assert response.json()['cpf_masked'] == '•••.•••.•••-35'
+    assert 'cpf' not in response.json()
+    assert 'cpf_lookup_hash' not in response.json()
+    assert 'cpf_collision_guard' not in response.json()
+
+
+def test_simulated_lookup_collision_allows_second_student(
+    client, school_admin_token, monkeypatch, caplog
+):
+    import src.routers.users as users_router
+    from src.utils.cpf import cpf_storage_values
+
+    first_cpf = '52998224725'
+    second_cpf = '39053344705'
+    first_values = cpf_storage_values(first_cpf)
+    second_values = cpf_storage_values(second_cpf)
+
+    def simulated_values(cpf):
+        if cpf == second_cpf:
+            return first_values[0], second_values[1], second_values[2]
+        return first_values
+
+    monkeypatch.setattr(users_router, 'cpf_storage_values', simulated_values)
+    monkeypatch.setattr(
+        users_router,
+        'cpf_lookup_digest',
+        lambda cpf: first_values[0]
+        if cpf == second_cpf
+        else cpf_storage_values(cpf)[0],
+    )
+    monkeypatch.setattr(
+        users_router,
+        'cpf_collision_guard',
+        lambda cpf: second_values[1]
+        if cpf == second_cpf
+        else cpf_storage_values(cpf)[1],
+    )
+    payload = {
+        'name': 'Primeiro aluno',
+        'cpf': first_cpf,
+        'birthdate': '2015-05-10',
+        'turma_numero': 7,
+        'turma_letra': 'A',
+    }
+    first = client.post(
+        '/users/students',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+        json=payload,
+    )
+    second = client.post(
+        '/users/students',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+        json={**payload, 'name': 'Segundo aluno', 'cpf': second_cpf},
+    )
+
+    assert first.status_code == HTTPStatus.CREATED
+    assert second.status_code == HTTPStatus.CREATED
+    lookup = client.get(
+        f'/users/?cpf={second_cpf}',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+    )
+    assert lookup.status_code == HTTPStatus.OK
+    assert lookup.json()['items'][0]['id'] == second.json()['id']
+    collision_records = [
+        record for record in caplog.records
+        if record.getMessage() == 'CPF_LOOKUP_HASH_COLLISION'
+    ]
+    assert collision_records
+    event_text = collision_records[-1].getMessage()
+    assert first_cpf not in event_text
+    assert second_cpf not in event_text
+    assert first_values[0].hex() not in str(collision_records[-1].__dict__)
+    assert second_values[1].hex() not in str(collision_records[-1].__dict__)
 
 
 def test_create_user_integraty(client, school, super_admin_token):
@@ -90,7 +164,9 @@ async def test_read_users_filters_by_cpf_and_includes_inactive_user(
     inactive = User(
         username='inactive_lookup',
         email='inactive_lookup@example.com',
-        cpf='52998224725',
+        cpf_lookup_hash=cpf_storage_values('52998224725')[0],
+        cpf_collision_guard=cpf_storage_values('52998224725')[1],
+        cpf_last2='25',
         password=get_password_hash('secret'),
         role=UserRole.STUDENT,
         school_id=school.id,
@@ -338,7 +414,8 @@ def test_create_student(client, school, school_admin, school_admin_token):
     assert resp.status_code == HTTPStatus.CREATED
     data = resp.json()
     assert data['role'] == 'student'
-    assert data['cpf'] == '52998224725'
+    assert data['cpf_masked'] == '•••.•••.•••-25'
+    assert 'cpf' not in data
     assert data['birthdate'] == '2015-05-10'
     assert data['turma_numero'] == 7
     assert data['turma_letra'] == 'A'

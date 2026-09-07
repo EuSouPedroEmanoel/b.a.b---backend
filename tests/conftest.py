@@ -9,6 +9,9 @@ os.environ.setdefault(
 )
 os.environ.setdefault('GOOGLE_BOOKS_API_KEY', 'test-key')
 os.environ.setdefault('SECRET_KEY', 'test-secret-key-for-tests-1234567890')
+os.environ.setdefault(
+    'CPF_HMAC_SECRET', 'test-cpf-hmac-secret-for-tests-32-bytes-minimum'
+)
 os.environ.setdefault('ALGORITHM', 'HS256')
 os.environ.setdefault('ACCESS_TOKEN_EXPIRE_MINUTES', '30')
 

@@ -10,6 +10,7 @@ from jwt import DecodeError, ExpiredSignatureError, decode, encode
 from pwdlib import PasswordHash
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.database import get_session
 from src.models import RevokedToken, School, User, UserRole
@@ -149,7 +150,12 @@ async def get_current_user(
             role='guest', school_id=school.id, school_code=school.code
         )
 
-    sttm = select(User).where(User.username == subject_username)
+    sttm = (
+        select(User)
+        .options(selectinload(User.capability_assignments))
+        .where(User.username == subject_username)
+        .execution_options(populate_existing=True)
+    )
     user = await session.scalar(sttm)
 
     if not user:

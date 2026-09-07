@@ -4,10 +4,17 @@ from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.circulation import (
+    active_overdue_reductions,
+    calculate_due_date,
+    ensure_new_loan_allowed,
+    lock_borrower,
+    resolve_circulation_policy,
+)
 from src.database import get_session
 from src.models import (
     BookCopy,
@@ -19,6 +26,7 @@ from src.models import (
     User,
     UserRole,
 )
+from src.permissions import has_personal_reader_capability
 from src.schemas import (
     FilterLoan,
     LoanCreate,
@@ -26,7 +34,7 @@ from src.schemas import (
     PaginatedResponse,
 )
 from src.security import RoleChecker, get_current_user
-from src.settings import Settings
+from src.utils.cpf import cpf_collision_guard, cpf_lookup_digest
 from src.utils.pagination import paginate
 from src.utils.reservation_queue import (
     lock_book_queue,
@@ -47,26 +55,6 @@ LibrarianOrAbove = Annotated[
         ])
     ),
 ]
-
-settings = Settings()
-
-
-async def _get_penalty_days(session: AsyncSession, borrower_id: int) -> int:
-    result = await session.scalar(
-        select(func.coalesce(func.sum(Loan.late_days), 0)).where(
-            Loan.user_id == borrower_id,
-            Loan.status == LoanStatus.RETURNED,
-        )
-    )
-    return int(result or 0)
-
-
-def _compute_due_date(penalty_days: int) -> datetime:
-    loan_days = max(
-        settings.LOAN_MIN_DAYS,
-        settings.LOAN_DAYS_DEFAULT - penalty_days,
-    )
-    return datetime.now(tz=ZoneInfo('UTC')) + timedelta(days=loan_days)
 
 
 def _apply_situation_filter(query, situation):
@@ -177,7 +165,10 @@ async def _resolve_borrower(
 ) -> User:
     borrower_query = select(User)
     if payload.cpf is not None:
-        borrower_query = borrower_query.where(User.cpf == payload.cpf)
+        borrower_query = borrower_query.where(
+            User.cpf_lookup_hash == cpf_lookup_digest(payload.cpf),
+            User.cpf_collision_guard == cpf_collision_guard(payload.cpf),
+        )
     else:
         borrower_query = borrower_query.where(User.id == payload.user_id)
     borrower = await session.scalar(borrower_query)
@@ -240,9 +231,18 @@ async def create_loan(
             )
         borrower = await _resolve_borrower(payload, school_id, session)
 
-    # penalty / due_date
-    penalty = await _get_penalty_days(session, borrower.id)
-    due_date = _compute_due_date(penalty)
+    borrower = await lock_borrower(session, borrower.id)
+    policy = await resolve_circulation_policy(
+        session, school_id, borrower.role
+    )
+    await ensure_new_loan_allowed(session, borrower, policy)
+
+    # The historic late-return penalty is preserved, using the school's
+    # configured duration as its base instead of a global fixed duration.
+    penalty = await active_overdue_reductions(session, borrower.id, policy)
+    due_date = await calculate_due_date(
+        session, school_id, policy, penalty
+    )
 
     loan = Loan(
         copy_id=copy.id,
@@ -341,10 +341,10 @@ async def list_loans(
     current_user: CurrentUser,
     loan_filter: Annotated[FilterLoan, Depends()],
 ):
-    # Students/Teachers only see own loans; staff see school loans
+    # Leitores autenticados veem seus empréstimos; equipe vê os da escola.
     query = _loan_public_query()
 
-    if current_user.role in {UserRole.STUDENT, UserRole.TEACHER}:
+    if has_personal_reader_capability(current_user.role):
         query = query.where(Loan.user_id == current_user.id)
     elif current_user.role == UserRole.SUPER_ADMIN:
         if loan_filter.user_id:
@@ -418,9 +418,9 @@ async def get_loan(
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Loan not found'
         )
-    # Students/Teachers can only see own loans
+    # Leitores autenticados só podem consultar os próprios empréstimos.
     if (
-        current_user.role in {UserRole.STUDENT, UserRole.TEACHER}
+        has_personal_reader_capability(current_user.role)
         and loan.user_id != current_user.id
     ):
         raise HTTPException(

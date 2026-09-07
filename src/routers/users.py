@@ -7,8 +7,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
-from src.models import User, UserRole
+from src.models import (
+    AdministrativeCapability,
+    User,
+    UserAdministrativeCapability,
+    UserRole,
+)
 from src.schemas import (
+    AdministrativeCapabilitiesPublic,
+    AdministrativeCapabilitiesUpdate,
     FilterUser,
     Message,
     PaginatedResponse,
@@ -22,7 +29,15 @@ from src.security import (
     get_current_user,
     get_password_hash,
 )
-from src.utils.cpf import normalize_cpf, validate_cpf
+from src.utils.cpf import (
+    classify_cpf_candidates,
+    cpf_collision_guard,
+    cpf_lookup_digest,
+    cpf_storage_values,
+    log_cpf_lookup_collision,
+    normalize_cpf,
+    validate_cpf,
+)
 from src.utils.pagination import paginate
 
 router = APIRouter(prefix='/users', tags={'users'})
@@ -38,6 +53,86 @@ StaffOnly = Annotated[
         ])
     ),
 ]
+
+
+async def _cpf_conflicts(
+    session: AsyncSession,
+    lookup_hash: bytes,
+    collision_guard: bytes,
+    school_id: int | None,
+    exclude_user_id: int | None = None,
+) -> bool:
+    query = select(User.id, User.cpf_collision_guard).where(
+        User.cpf_lookup_hash == lookup_hash
+    )
+    if exclude_user_id is not None:
+        query = query.where(User.id != exclude_user_id)
+    candidates = list((await session.execute(query)).all())
+    duplicate, collision_ids = classify_cpf_candidates(
+        candidates, collision_guard
+    )
+    if collision_ids:
+        log_cpf_lookup_collision(
+            school_id=school_id, existing_user_ids=collision_ids
+        )
+    return duplicate
+
+
+@router.put(
+    '/{user_id}/administrative-capabilities',
+    response_model=AdministrativeCapabilitiesPublic,
+)
+async def update_administrative_capabilities(
+    user_id: int,
+    payload: AdministrativeCapabilitiesUpdate,
+    session: Session,
+    current_user: CurrentUser,
+):
+    target = await session.scalar(select(User).where(User.id == user_id))
+    if target is None or not target.is_active:
+        raise HTTPException(HTTPStatus.NOT_FOUND, 'User Not Found...')
+    if target.role != UserRole.LIBRARIAN:
+        raise HTTPException(
+            HTTPStatus.BAD_REQUEST,
+            'Capacidades administrativas só podem ser atribuídas a '
+            'bibliotecários',
+        )
+    allowed = current_user.role == UserRole.SUPER_ADMIN or (
+        current_user.role == UserRole.SCHOOL_ADMIN
+        and current_user.school_id == target.school_id
+    )
+    if not allowed:
+        raise HTTPException(HTTPStatus.FORBIDDEN, 'Not enough permissions')
+
+    current = (await session.scalars(
+        select(UserAdministrativeCapability).where(
+            UserAdministrativeCapability.user_id == target.id
+        )
+    )).all()
+    for assignment in current:
+        await session.delete(assignment)
+    for capability, enabled in {
+        AdministrativeCapability.MANAGE_LIBRARY_CALENDAR:
+        payload.manage_library_calendar,
+        AdministrativeCapability.MANAGE_CIRCULATION_RULES:
+        payload.manage_circulation_rules,
+    }.items():
+        if enabled:
+            session.add(UserAdministrativeCapability(
+                user_id=target.id, capability=capability.value
+            ))
+    await session.commit()
+    return {
+        'user_id': target.id,
+        'capabilities': [
+            capability for capability, enabled in {
+                AdministrativeCapability.MANAGE_LIBRARY_CALENDAR:
+                payload.manage_library_calendar,
+                AdministrativeCapability.MANAGE_CIRCULATION_RULES:
+                payload.manage_circulation_rules,
+            }.items() if enabled
+        ],
+    }
 
 
 @router.post('/', status_code=HTTPStatus.CREATED, response_model=UserPublic)
@@ -64,10 +159,20 @@ async def create_user(
         target_school_id = current_user.school_id
 
     hashed = get_password_hash(user.password)
+    lookup_hash, collision_guard, last2 = cpf_storage_values(user.cpf)
+    if await _cpf_conflicts(
+        session, lookup_hash, collision_guard, target_school_id
+    ):
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT,
+            detail='Username, Email or CPF already exists!!',
+        )
     db_user = User(
         username=user.username,
         email=user.email,
-        cpf=user.cpf,
+        cpf_lookup_hash=lookup_hash,
+        cpf_collision_guard=collision_guard,
+        cpf_last2=last2,
         password=hashed,
         role=user.role,
         school_id=target_school_id,
@@ -136,10 +241,10 @@ async def create_student(
             )
         target_school_id = current_user.school_id
 
-    existing = await session.scalar(
-        select(User).where(User.cpf == payload.cpf)
-    )
-    if existing:
+    lookup_hash, collision_guard, last2 = cpf_storage_values(payload.cpf)
+    if await _cpf_conflicts(
+        session, lookup_hash, collision_guard, target_school_id
+    ):
         raise HTTPException(
             status_code=HTTPStatus.CONFLICT, detail='CPF already exists'
         )
@@ -149,7 +254,9 @@ async def create_student(
     db_user = User(
         username=username,
         email=None,
-        cpf=payload.cpf,
+        cpf_lookup_hash=lookup_hash,
+        cpf_collision_guard=collision_guard,
+        cpf_last2=last2,
         birthdate=payload.birthdate,
         turma_numero=payload.turma_numero,
         turma_letra=payload.turma_letra,
@@ -200,7 +307,8 @@ async def read_users(
         sttm = sttm.where(User.is_active.is_(True))
     else:
         sttm = sttm.where(
-            User.cpf == normalize_cpf(filter_users.cpf)
+            User.cpf_lookup_hash == cpf_lookup_digest(filter_users.cpf),
+            User.cpf_collision_guard == cpf_collision_guard(filter_users.cpf),
         )
 
     items, total, page, size, pages = await paginate(
@@ -257,14 +365,21 @@ async def _apply_updates(
                 status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
                 detail='CPF inválido',
             )
-        conflict = await session.scalar(
-            select(User).where(User.cpf == cpf, User.id != target.id)
+        lookup_hash, collision_guard, last2 = cpf_storage_values(cpf)
+        conflict = await _cpf_conflicts(
+            session,
+            lookup_hash,
+            collision_guard,
+            target.school_id,
+            exclude_user_id=target.id,
         )
         if conflict:
             raise HTTPException(
                 status_code=HTTPStatus.CONFLICT, detail='CPF already exists'
             )
-        target.cpf = cpf
+        target.cpf_lookup_hash = lookup_hash
+        target.cpf_collision_guard = collision_guard
+        target.cpf_last2 = last2
     if 'birthdate' in data:
         target.birthdate = data['birthdate']
     if 'turma_numero' in data:

@@ -37,6 +37,7 @@ from src.models import (
 )
 from src.security import get_password_hash
 from src.settings import Settings
+from src.utils.cpf import cpf_storage_values
 from src.utils.authors import display_name_author, slugify_author
 from src.utils.genres import display_name_genre, slugify_genre
 
@@ -125,8 +126,12 @@ def _student_fields(username: str) -> dict:
     hoje = date.today()
     idx = int(num[-2:]) if num[-2:].isdigit() else 0
     idade = 11 + (idx % 4)
+    cpf = _cpf_with_check(base)
+    lookup_hash, collision_guard, last2 = cpf_storage_values(cpf)
     return {
-        "cpf": _cpf_with_check(base),
+        "cpf_lookup_hash": lookup_hash,
+        "cpf_collision_guard": collision_guard,
+        "cpf_last2": last2,
         "birthdate": date(hoje.year - idade, hoje.month, hoje.day),
         "turma_numero": 6 + (idx % 4),
         "turma_letra": ("A", "B")[idx % 2],

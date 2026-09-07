@@ -2,11 +2,12 @@ from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.circulation import lock_borrower, resolve_circulation_policy
 from src.database import get_session
 from src.models import (
     BookCopy,
@@ -16,6 +17,7 @@ from src.models import (
     User,
     UserRole,
 )
+from src.permissions import has_personal_reader_capability
 from src.schemas import (
     FilterReservation,
     Message,
@@ -103,14 +105,23 @@ async def create_reservation(
     session: Session,
     current_user: CurrentUser,
 ):
-    if current_user.role not in {UserRole.STUDENT, UserRole.TEACHER}:
+    if not has_personal_reader_capability(current_user.role):
         raise HTTPException(
             status_code=HTTPStatus.FORBIDDEN,
-            detail='Only STUDENT/TEACHER can create reservations',
+            detail='Apenas leitores autenticados podem criar reservas',
         )
     if current_user.school_id is None:
         raise HTTPException(
             status_code=HTTPStatus.FORBIDDEN, detail='User without school'
+        )
+    borrower = await lock_borrower(session, current_user.id)
+    policy = await resolve_circulation_policy(
+        session, current_user.school_id, borrower.role
+    )
+    if not policy.can_reserve:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='Reservas não são permitidas para este perfil.',
         )
 
     book = await lock_book_queue(session, payload.book_id)
@@ -139,6 +150,22 @@ async def create_reservation(
         raise HTTPException(
             status_code=HTTPStatus.CONFLICT,
             detail='Active reservation already exists',
+        )
+
+    active_reservations = await session.scalar(
+        select(func.count(Reservation.id)).where(
+            Reservation.user_id == current_user.id,
+            Reservation.school_id == current_user.school_id,
+            Reservation.status.in_([
+                ReservationStatus.ACTIVE,
+                ReservationStatus.READY,
+            ]),
+        )
+    )
+    if int(active_reservations or 0) >= policy.max_active_reservations:
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT,
+            detail='Limite de reservas simultâneas atingido.',
         )
 
     # only allow if no available copies for this book in user's school
@@ -194,8 +221,8 @@ async def list_reservations(
         selectinload(Reservation.copy),
     )
 
-    # Students/Teachers see only own; staff see school's
-    if current_user.role in {UserRole.STUDENT, UserRole.TEACHER}:
+    # Leitores autenticados veem apenas os próprios; equipe vê os da escola.
+    if has_personal_reader_capability(current_user.role):
         query = query.where(Reservation.user_id == current_user.id)
     elif current_user.role == UserRole.SUPER_ADMIN:
         pass
@@ -279,7 +306,7 @@ async def get_reservation(
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Reservation not found'
         )
-    if current_user.role in {UserRole.STUDENT, UserRole.TEACHER} and (
+    if has_personal_reader_capability(current_user.role) and (
         reservation.user_id != current_user.id
     ):
         raise HTTPException(

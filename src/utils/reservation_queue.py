@@ -12,8 +12,8 @@ from src.models import (
     Reservation,
     ReservationStatus,
     User,
-    UserRole,
 )
+from src.permissions import has_personal_reader_capability
 
 
 async def lock_book_queue(session: AsyncSession, book_id: int) -> Book | None:
@@ -50,7 +50,7 @@ async def promote_copy_to_next_reservation(
         if (
             not reader.is_active
             or reader.school_id != copy.school_id
-            or reader.role not in {UserRole.STUDENT, UserRole.TEACHER}
+            or not has_personal_reader_capability(reader.role)
         ):
             reservation.status = ReservationStatus.EXPIRED
             session.add(reservation)

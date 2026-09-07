@@ -18,6 +18,11 @@ from src.schemas import (
     UserPublic,
 )
 from src.security import get_current_active_super_admin, get_password_hash
+from src.utils.cpf import (
+    classify_cpf_candidates,
+    cpf_storage_values,
+    log_cpf_lookup_collision,
+)
 from src.utils.pagination import paginate
 
 router = APIRouter(prefix='/schools', tags=['schools'])
@@ -87,10 +92,30 @@ async def create_school_admin(
         )
 
     hashed = get_password_hash(admin.password)
+    lookup_hash, collision_guard, last2 = cpf_storage_values(admin.cpf)
+    candidates = list((await session.execute(
+        select(User.id, User.cpf_collision_guard).where(
+            User.cpf_lookup_hash == lookup_hash
+        )
+    )).all())
+    duplicate, collision_ids = classify_cpf_candidates(
+        candidates, collision_guard
+    )
+    if collision_ids:
+        log_cpf_lookup_collision(
+            school_id=school.id, existing_user_ids=collision_ids
+        )
+    if duplicate:
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT,
+            detail='Username, Email or CPF already exists',
+        )
     db_user = User(
         username=admin.username,
         email=admin.email,
-        cpf=admin.cpf,
+        cpf_lookup_hash=lookup_hash,
+        cpf_collision_guard=collision_guard,
+        cpf_last2=last2,
         password=hashed,
         role=UserRole.SCHOOL_ADMIN,
         school_id=school.id,

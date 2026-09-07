@@ -11,6 +11,7 @@ from pydantic import (
 )
 
 from src.models import (
+    AdministrativeCapability,
     BookCondition,
     BooksStates,
     LoanStatus,
@@ -44,6 +45,92 @@ class Message(BaseModel):
     message: str
 
 
+# region - Circulation policies
+class CirculationPolicyPublic(BaseModel):
+    reader_role: UserRole
+    max_active_loans: int
+    loan_duration_days: int
+    max_renewals: int
+    can_reserve: bool
+    max_active_reservations: int
+    block_new_loans_when_overdue: bool
+    post_overdue_suspension_days: int
+    count_only_business_days: bool
+    move_due_date_to_next_business_day: bool
+    apply_overdue_due_date_reduction: bool
+    overdue_due_date_reduction_days: int
+    max_overdue_reductions: int
+    minimum_loan_days_after_penalties: int
+    overdue_recovery_mode: Literal['on_time_returns', 'elapsed_days']
+    overdue_recovery_on_time_returns: int | None
+    overdue_recovery_days: int | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CirculationPolicyUpdate(BaseModel):
+    reader_role: UserRole
+    max_active_loans: int = Field(ge=0, le=20)
+    loan_duration_days: int = Field(ge=1, le=90)
+    max_renewals: int = Field(ge=0, le=10)
+    can_reserve: bool
+    max_active_reservations: int = Field(ge=0, le=20)
+    block_new_loans_when_overdue: bool
+    post_overdue_suspension_days: int = Field(ge=0, le=365)
+    count_only_business_days: bool = False
+    move_due_date_to_next_business_day: bool = False
+    apply_overdue_due_date_reduction: bool = True
+    overdue_due_date_reduction_days: int = Field(default=1, ge=0, le=90)
+    max_overdue_reductions: int = Field(default=14, ge=0, le=90)
+    minimum_loan_days_after_penalties: int = Field(default=1, ge=1, le=90)
+    overdue_recovery_mode: Literal['on_time_returns', 'elapsed_days'] = 'on_time_returns'
+    overdue_recovery_on_time_returns: int | None = Field(default=3, ge=1, le=100)
+    overdue_recovery_days: int | None = Field(default=None, ge=1, le=3650)
+
+    @model_validator(mode='after')
+    def validate_recovery(self):
+        if self.overdue_recovery_mode == 'on_time_returns':
+            if self.overdue_recovery_on_time_returns is None:
+                raise ValueError('Informe o número de devoluções no prazo')
+            self.overdue_recovery_days = None
+        elif self.overdue_recovery_days is None:
+            raise ValueError('Informe o número de dias para recuperação')
+        else:
+            self.overdue_recovery_on_time_returns = None
+        return self
+
+    @field_validator('reader_role')
+    @classmethod
+    def validate_reader_role(cls, value: UserRole) -> UserRole:
+        if value not in {UserRole.STUDENT, UserRole.TEACHER}:
+            raise ValueError('Perfil de leitor inválido para circulação')
+        return value
+
+
+class CirculationPoliciesUpdate(BaseModel):
+    policies: list[CirculationPolicyUpdate]
+
+    @model_validator(mode='after')
+    def validate_complete_profiles(self):
+        roles = [policy.reader_role for policy in self.policies]
+        expected = {UserRole.STUDENT, UserRole.TEACHER}
+        expected_count = len(expected)
+        if (
+            len(self.policies) != expected_count
+            or set(roles) != expected
+            or len(set(roles)) != expected_count
+        ):
+            raise ValueError('Informe uma política para Aluno e outra para Professor')
+        return self
+
+
+class CirculationPoliciesPublic(BaseModel):
+    policies: list[CirculationPolicyPublic]
+
+
+# endregion
+
+
 # region - User
 class UserSchema(BaseModel):
     username: str
@@ -54,7 +141,7 @@ class UserSchema(BaseModel):
 class UserPublic(BaseModel):
     username: str
     email: EmailStr | None = None
-    cpf: str | None = None
+    cpf_masked: str | None = None
     birthdate: date | None = None
     turma_numero: int | None = None
     turma_letra: str | None = None
@@ -66,6 +153,7 @@ class UserPublic(BaseModel):
     is_active: bool = True
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    administrative_capabilities: list[AdministrativeCapability] = []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -76,6 +164,60 @@ class UserDB(UserSchema):
 
 class UserList(BaseModel):
     users: list[UserPublic]
+
+
+class NonWorkingDayPublic(BaseModel):
+    date: date
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class NonWorkingDayCreate(BaseModel):
+    date: date
+
+
+class NonWorkingDayRangeCreate(BaseModel):
+    start_date: date
+    end_date: date
+
+    @model_validator(mode='after')
+    def validate_range(self):
+        if self.end_date < self.start_date:
+            raise ValueError('end_date deve ser posterior ou igual a start_date')
+        return self
+
+
+class NonWorkingMonthCreate(BaseModel):
+    year: int = Field(ge=1900, le=2100)
+    month: int = Field(ge=1, le=12)
+
+
+class LibraryCalendarPublic(BaseModel):
+    year: int
+    days: list[NonWorkingDayPublic]
+
+
+class NationalHolidayPublic(BaseModel):
+    date: date
+    name: str
+    already_added: bool = False
+
+
+class NationalHolidayImportPublic(BaseModel):
+    year: int
+    holidays: list[NationalHolidayPublic]
+    added_count: int
+    already_added_count: int
+
+
+class AdministrativeCapabilitiesUpdate(BaseModel):
+    manage_library_calendar: bool = False
+    manage_circulation_rules: bool = False
+
+
+class AdministrativeCapabilitiesPublic(BaseModel):
+    user_id: int
+    capabilities: list[AdministrativeCapability]
 
 
 class StaffCreateSchema(BaseModel):
@@ -308,6 +450,14 @@ class FilterUser(FilterPage):
     role: UserRole | None = None
     school_id: int | None = None
     cpf: str | None = None
+
+    @model_validator(mode='after')
+    def validate_cpf_field(self):
+        if self.cpf is not None:
+            self.cpf = normalize_cpf(self.cpf)
+            if not validate_cpf(self.cpf):
+                raise ValueError('CPF inválido')
+        return self
 
 
 class FilterBook(FilterPage):

@@ -25,6 +25,7 @@ from src.models import (
     book_authors,
     book_genres,
 )
+from src.permissions import has_personal_reader_capability
 from src.schemas import (
     BookCopyPublic,
     BookCopySchema,
@@ -887,8 +888,8 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
                     break
         cond_avail_q = None
         if matched_state is not None:
-            if user.role in {UserRole.STUDENT, UserRole.TEACHER}:
-                # Para usuários finais, a busca por estado pessoal deve
+            if has_personal_reader_capability(user.role):
+                # Para leitores autenticados, a busca por estado pessoal deve
                 # considerar somente seus próprios empréstimos/reservas.
                 if matched_state == BooksStates.BORROWED:
                     cond_avail_q = exists().where(
@@ -936,10 +937,10 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
         sttm = sttm.where(Book.title.contains(book_filter.title))
     if book_filter.description:
         sttm = sttm.where(Book.description.contains(book_filter.description))
-    # Estados de empréstimo/reserva são pessoais para alunos e professores.
+    # Estados de empréstimo/reserva são pessoais para leitores autenticados.
     # A visibilidade do inventário continua baseada no acervo da escola, mas
     # nunca expõe livros perdidos/arquivados a esses perfis.
-    if user.role in {UserRole.STUDENT, UserRole.TEACHER}:
+    if has_personal_reader_capability(user.role):
         derived_state = Book.derived_state_expr(school_scope)
         visible_inventory = derived_state.in_([
             BooksStates.AVAILABLE,
@@ -979,7 +980,7 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
         }:
             sttm = sttm.where(false())
         elif book_filter.state is None:
-            # Sem filtro, o aluno vê o acervo disponível e seus próprios
+            # Sem filtro, o leitor vê o acervo disponível e seus próprios
             # empréstimos/reservas para não perder acesso a esses registros.
             sttm = sttm.where(
                 (derived_state == BooksStates.AVAILABLE)

@@ -8,6 +8,7 @@ from sqlalchemy import (
     Column,
     ForeignKey,
     Index,
+    LargeBinary,
     String,
     Table,
     UniqueConstraint,
@@ -25,7 +26,7 @@ from sqlalchemy.orm import (
     relationship,
 )
 
-from src.utils.cpf import CPF_LENGTH
+from src.utils.cpf import mask_cpf_last2
 
 table_registry = registry()
 
@@ -81,6 +82,11 @@ class UserRole(str, Enum):
     STUDENT = 'student'
 
 
+class AdministrativeCapability(str, Enum):
+    MANAGE_LIBRARY_CALENDAR = 'manage_library_calendar'
+    MANAGE_CIRCULATION_RULES = 'manage_circulation_rules'
+
+
 class LoanStatus(str, Enum):
     ACTIVE = 'active'
     RETURNED = 'returned'
@@ -128,6 +134,16 @@ class User:
             "(role = 'super_admin') OR (school_id IS NOT NULL)",
             name='ck_user_school_required',
         ),
+        CheckConstraint(
+            '(cpf_lookup_hash IS NULL) = (cpf_collision_guard IS NULL) '
+            'AND (cpf_lookup_hash IS NULL) = (cpf_last2 IS NULL)',
+            name='ck_user_cpf_fields_consistent',
+        ),
+        UniqueConstraint(
+            'cpf_lookup_hash',
+            'cpf_collision_guard',
+            name='uq_users_cpf_lookup_collision_guard',
+        ),
     )
 
     id: Mapped[int] = mapped_column(
@@ -135,8 +151,15 @@ class User:
     )
     username: Mapped[str] = mapped_column(unique=True, nullable=False)
     email: Mapped[str] = mapped_column(unique=True, nullable=True)
-    cpf: Mapped[str | None] = mapped_column(
-        unique=True, kw_only=True, default=None, nullable=True
+    cpf_lookup_hash: Mapped[bytes | None] = mapped_column(
+        LargeBinary(32), kw_only=True, default=None,
+        nullable=True
+    )
+    cpf_collision_guard: Mapped[bytes | None] = mapped_column(
+        LargeBinary(32), kw_only=True, default=None, nullable=True
+    )
+    cpf_last2: Mapped[str | None] = mapped_column(
+        String(2), kw_only=True, default=None, nullable=True
     )
     birthdate: Mapped[date | None] = mapped_column(
         kw_only=True, default=None, nullable=True
@@ -182,10 +205,196 @@ class User:
         lazy='selectin',
         foreign_keys='BookCopy.added_by',
     )
+    capability_assignments: Mapped[
+        list[UserAdministrativeCapability]
+    ] = relationship(
+        init=False,
+        back_populates='user',
+        cascade='all, delete-orphan',
+        lazy='selectin',
+    )
 
     @property
     def school_name(self) -> str | None:
         return self.school.name if self.school else None
+
+    @property
+    def administrative_capabilities(self) -> list[str]:
+        return [item.capability for item in self.capability_assignments]
+
+    @property
+    def cpf_masked(self) -> str | None:
+        return mask_cpf_last2(self.cpf_last2)
+
+
+@table_registry.mapped_as_dataclass()
+class UserAdministrativeCapability:
+    __tablename__ = 'user_administrative_capabilities'
+    __table_args__ = (
+        UniqueConstraint(
+            'user_id', 'capability',
+            name='uq_user_administrative_capability',
+        ),
+        CheckConstraint(
+            "capability IN ('manage_library_calendar', "
+            "'manage_circulation_rules')",
+            name='ck_user_administrative_capability_value',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey('users.id', ondelete='CASCADE'), nullable=False
+    )
+    capability: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now()
+    )
+
+    user: Mapped[User] = relationship(
+        init=False, back_populates='capability_assignments', lazy='selectin'
+    )
+
+
+@table_registry.mapped_as_dataclass()
+class SchoolNonWorkingDay:
+    __tablename__ = 'school_non_working_days'
+    __table_args__ = (
+        UniqueConstraint(
+            'school_id', 'date', name='uq_school_non_working_day'
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    school_id: Mapped[int] = mapped_column(
+        ForeignKey('schools.id', ondelete='CASCADE'), nullable=False
+    )
+    date: Mapped[date] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now()
+    )
+
+    school: Mapped[School] = relationship(init=False, lazy='selectin')
+
+
+@table_registry.mapped_as_dataclass()
+class CirculationPolicy:
+    __tablename__ = 'circulation_policies'
+    __table_args__ = (
+        UniqueConstraint(
+            'school_id',
+            'reader_role',
+            name='uq_circulation_policy_school_role',
+        ),
+        CheckConstraint(
+            "reader_role IN ('student', 'teacher')",
+            name='ck_circulation_policy_reader_role',
+        ),
+        CheckConstraint(
+            'max_active_loans >= 0',
+            name='ck_circulation_policy_max_active_loans',
+        ),
+        CheckConstraint(
+            'loan_duration_days >= 1',
+            name='ck_circulation_policy_loan_duration_days',
+        ),
+        CheckConstraint(
+            'max_renewals >= 0',
+            name='ck_circulation_policy_max_renewals',
+        ),
+        CheckConstraint(
+            'max_active_reservations >= 0',
+            name='ck_circulation_policy_max_active_reservations',
+        ),
+        CheckConstraint(
+            'post_overdue_suspension_days >= 0',
+            name='ck_circulation_policy_post_overdue_suspension_days',
+        ),
+        CheckConstraint(
+            'overdue_due_date_reduction_days >= 0',
+            name='ck_circulation_policy_overdue_reduction_days',
+        ),
+        CheckConstraint(
+            'max_overdue_reductions >= 0',
+            name='ck_circulation_policy_max_overdue_reductions',
+        ),
+        CheckConstraint(
+            'minimum_loan_days_after_penalties >= 1',
+            name='ck_circulation_policy_minimum_penalty_days',
+        ),
+        CheckConstraint(
+            "overdue_recovery_mode IN ('on_time_returns', 'elapsed_days')",
+            name='ck_circulation_policy_recovery_mode',
+        ),
+        CheckConstraint(
+            'overdue_recovery_on_time_returns IS NULL OR '
+            'overdue_recovery_on_time_returns >= 1',
+            name='ck_circulation_policy_recovery_returns',
+        ),
+        CheckConstraint(
+            'overdue_recovery_days IS NULL OR overdue_recovery_days >= 1',
+            name='ck_circulation_policy_recovery_days',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    school_id: Mapped[int] = mapped_column(ForeignKey('schools.id'))
+    reader_role: Mapped[UserRole] = mapped_column(
+        SQLEnum(UserRole, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+    )
+    max_active_loans: Mapped[int] = mapped_column(nullable=False)
+    loan_duration_days: Mapped[int] = mapped_column(nullable=False)
+    max_active_reservations: Mapped[int] = mapped_column(nullable=False)
+    max_renewals: Mapped[int] = mapped_column(default=0, nullable=False)
+    can_reserve: Mapped[bool] = mapped_column(default=True, nullable=False)
+    block_new_loans_when_overdue: Mapped[bool] = mapped_column(
+        default=True, nullable=False
+    )
+    post_overdue_suspension_days: Mapped[int] = mapped_column(
+        default=0, nullable=False
+    )
+    count_only_business_days: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
+    move_due_date_to_next_business_day: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
+    apply_overdue_due_date_reduction: Mapped[bool] = mapped_column(
+        default=True, nullable=False
+    )
+    overdue_due_date_reduction_days: Mapped[int] = mapped_column(
+        default=1, nullable=False
+    )
+    max_overdue_reductions: Mapped[int] = mapped_column(
+        default=14, nullable=False
+    )
+    minimum_loan_days_after_penalties: Mapped[int] = mapped_column(
+        default=1, nullable=False
+    )
+    overdue_recovery_mode: Mapped[str] = mapped_column(
+        default='on_time_returns', nullable=False
+    )
+    overdue_recovery_on_time_returns: Mapped[int | None] = mapped_column(
+        default=3, nullable=True
+    )
+    overdue_recovery_days: Mapped[int | None] = mapped_column(
+        default=None, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    school: Mapped[School] = relationship(init=False, lazy='selectin')
 
     @property
     def school_code(self) -> str | None:
@@ -473,12 +682,7 @@ class Loan:
 
     @property
     def borrower_cpf_masked(self) -> str | None:
-        if not self.borrower.cpf:
-            return None
-        digits = ''.join(ch for ch in self.borrower.cpf if ch.isdigit())
-        if len(digits) != CPF_LENGTH:
-            return '***.***.***-**'
-        return f'***.***.***-{digits[-2:]}'
+        return self.borrower.cpf_masked
 
 
 @table_registry.mapped_as_dataclass()

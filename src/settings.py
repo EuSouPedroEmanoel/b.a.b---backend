@@ -1,3 +1,4 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +10,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     GOOGLE_BOOKS_API_KEY: str
     SECRET_KEY: str
+    CPF_HMAC_SECRET: SecretStr
     ALGORITHM: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int
     GUEST_TOKEN_EXPIRE_MINUTES: int = 30

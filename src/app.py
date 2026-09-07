@@ -10,8 +10,10 @@ from src.routers import (
     auth,
     authors,
     books,
+    circulation_policies,
     copies,
     genres,
+    library_calendar,
     loans,
     reservations,
     schools,
@@ -50,6 +52,12 @@ app.include_router(auth.router)
 app.include_router(users.router, dependencies=[Depends(require_account)])
 app.include_router(books.router)
 app.include_router(copies.router, dependencies=[Depends(require_account)])
+app.include_router(
+    circulation_policies.router, dependencies=[Depends(require_account)]
+)
+app.include_router(
+    library_calendar.router, dependencies=[Depends(require_account)]
+)
 app.include_router(genres.router)
 app.include_router(authors.router)
 app.include_router(schools.router, dependencies=[Depends(require_account)])

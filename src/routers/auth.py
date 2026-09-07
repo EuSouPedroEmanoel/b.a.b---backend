@@ -28,7 +28,12 @@ from src.security import (
     verify_password,
 )
 from src.settings import Settings
-from src.utils.cpf import normalize_cpf
+from src.utils.cpf import (
+    cpf_collision_guard,
+    cpf_lookup_digest,
+    normalize_cpf,
+    validate_cpf,
+)
 
 router = APIRouter(prefix='/auth', tags={'auth'})
 
@@ -86,10 +91,15 @@ async def login_for_access_token(
     user = await session.scalar(sttm)
 
     if not user:
-        # students authenticate with CPF
+        # Leitores que usam CPF também podem autenticar por esse identificador.
         cpf = normalize_cpf(form_data.username)
-        if cpf:
-            user = await session.scalar(select(User).where(User.cpf == cpf))
+        if cpf and validate_cpf(cpf):
+            user = await session.scalar(
+                select(User).where(
+                    User.cpf_lookup_hash == cpf_lookup_digest(cpf),
+                    User.cpf_collision_guard == cpf_collision_guard(cpf),
+                )
+            )
 
     if not user:
         raise HTTPException(

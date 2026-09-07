@@ -26,6 +26,7 @@ from src.models import (
 from src.routers.loans import create_loan
 from src.schemas import LoanCreate
 from src.security import get_password_hash
+from src.utils.cpf import cpf_storage_values
 from tests.factories import BookCopyFactory, BookFactory, ReservationFactory
 
 
@@ -68,7 +69,11 @@ async def test_create_loan_success(
 async def test_create_loan_by_internal_code_and_cpf(
     session, client, user, token, student, book
 ):
-    student.cpf = '52998224725'
+    (
+        student.cpf_lookup_hash,
+        student.cpf_collision_guard,
+        student.cpf_last2,
+    ) = cpf_storage_values('52998224725')
     session.add(student)
     await session.commit()
 
@@ -95,12 +100,14 @@ async def test_create_loan_by_internal_code_and_cpf(
     assert data['book_title'] == book.title
     assert data['book_cover_url'] == book.cover_url
     assert data['borrower_username'] == student.username
-    assert data['borrower_cpf_masked'] == '***.***.***-25'
+    assert data['borrower_cpf_masked'] == '•••.•••.•••-25'
     assert '52998224725' not in resp.text
     loan = await session.get(Loan, data['id'])
-    student.cpf = '123'
+    student.cpf_lookup_hash = None
+    student.cpf_collision_guard = None
+    student.cpf_last2 = None
     loan.borrower = student
-    assert loan.borrower_cpf_masked == '***.***.***-**'
+    assert loan.borrower_cpf_masked is None
 
 
 def test_loan_create_rejects_invalid_identifier_combinations():
@@ -137,7 +144,9 @@ async def test_super_admin_disambiguates_internal_code_by_school(
     borrower = User(
         username='duplicate_code_borrower',
         email='duplicate_code_borrower@example.com',
-        cpf='39053344705',
+        cpf_lookup_hash=cpf_storage_values('39053344705')[0],
+        cpf_collision_guard=cpf_storage_values('39053344705')[1],
+        cpf_last2='05',
         password=get_password_hash('secret'),
         role=UserRole.STUDENT,
         school_id=other_school.id,
@@ -151,13 +160,15 @@ async def test_super_admin_disambiguates_internal_code_by_school(
         headers=headers,
         json={
             'internal_code': code,
-            'cpf': borrower.cpf,
+            'cpf': '39053344705',
             'school_id': 99999,
         },
     )
     assert missing_school.status_code == HTTPStatus.NOT_FOUND
     ambiguous = client.post(
-        '/loans/', headers=headers, json={'internal_code': code, 'cpf': borrower.cpf}
+        '/loans/',
+        headers=headers,
+        json={'internal_code': code, 'cpf': '39053344705'},
     )
     assert ambiguous.status_code == HTTPStatus.CONFLICT
 
@@ -166,7 +177,7 @@ async def test_super_admin_disambiguates_internal_code_by_school(
         headers=headers,
         json={
             'internal_code': code,
-            'cpf': borrower.cpf,
+            'cpf': '39053344705',
             'school_id': other_school.id,
         },
     )
@@ -427,7 +438,7 @@ async def test_return_late_calculates_penalty(
         assert ret.status_code == HTTPStatus.OK
         assert ret.json()['late_days'] == 6
 
-    # next loan should have reduced prazo: 14 - 6 = 8 days
+    # one previous overdue return applies one progressive reduction day
     copy2 = BookCopyFactory(
         book_id=book.id,
         user_id=user.id,
@@ -448,7 +459,7 @@ async def test_return_late_calculates_penalty(
         )
         assert resp2.status_code == HTTPStatus.CREATED
         due2 = datetime.fromisoformat(resp2.json()['due_date'])
-        assert due2.date().isoformat() == '2026-01-30'  # 8 days after 22
+        assert due2.date().isoformat() == '2026-02-04'  # 13 days after 22
         loan2_id = resp2.json()['id']
         # cleanup return
         client.post(
@@ -458,10 +469,10 @@ async def test_return_late_calculates_penalty(
 
 
 @pytest.mark.asyncio
-async def test_penalty_min_one_day(
+async def test_progressive_penalty_counts_overdue_returns_not_late_days(
     session, client, user, token, student, book
 ):
-    # create a loan returned 20 days late -> penalty 20, next loan min 1 day
+    # A single late return creates one reduction, regardless of late-day count.
     copy = BookCopyFactory(
         book_id=book.id,
         user_id=user.id,
@@ -520,8 +531,8 @@ async def test_penalty_min_one_day(
         )
         assert resp2.status_code == HTTPStatus.CREATED
         due2 = datetime.fromisoformat(resp2.json()['due_date'])
-        # 14 - 20 => min 1 day => due 2026-03-02
-        assert due2.date().isoformat() == '2026-03-02'
+        # 14 - 1 progressive reduction => due 2026-03-14
+        assert due2.date().isoformat() == '2026-03-14'
 
 
 @pytest.mark.asyncio
