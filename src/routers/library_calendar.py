@@ -52,8 +52,9 @@ def _can_view(user: User, school_id: int) -> bool:
 
 
 def _can_manage(user: User, school_id: int) -> bool:
-    return user.role in {UserRole.SUPER_ADMIN, UserRole.SCHOOL_ADMIN} and (
-        user.role == UserRole.SUPER_ADMIN or user.school_id == school_id
+    return (
+        user.role == UserRole.SCHOOL_ADMIN
+        and user.school_id == school_id
     ) or has_administrative_capability(
         user, AdministrativeCapability.MANAGE_LIBRARY_CALENDAR, school_id
     )
