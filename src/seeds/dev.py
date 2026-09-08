@@ -122,6 +122,21 @@ async def seed_users(session: AsyncSession, schools: list[School]) -> dict:
             select(User).where(User.username == username)
         )
         if existing:
+            if role == UserRole.STUDENT and (
+                existing.cpf_lookup_hash is None
+                or existing.cpf_collision_guard == existing.cpf_lookup_hash
+            ):
+                cpf = _cpf_with_check(
+                    f'{username.replace("student_dev", "").zfill(2)}'.rjust(9, '0')
+                )
+                (
+                    existing.cpf_lookup_hash,
+                    existing.cpf_collision_guard,
+                    existing.cpf_last2,
+                ) = cpf_storage_values(cpf)
+                session.add(existing)
+                await session.flush()
+                print(f'User {username} CPF data repaired (id={existing.id})')
             print(f"User {username} already exists (id={existing.id})")
             users[username] = existing
             continue
