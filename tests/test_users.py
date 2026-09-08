@@ -619,5 +619,131 @@ def test_update_student_turma_and_birthdate(
     assert resp.json()['birthdate'] == '2014-03-20'
 
 
+def test_update_administrative_capabilities(
+    client, user, school_admin_token, token
+):
+    response = client.put(
+        f'/users/{user.id}/administrative-capabilities',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+        json={
+            'manage_library_calendar': True,
+            'manage_circulation_rules': False,
+        },
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['user_id'] == user.id
+    assert response.json()['capabilities'] == ['manage_library_calendar']
+
+    forbidden = client.put(
+        f'/users/{user.id}/administrative-capabilities',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'manage_library_calendar': False},
+    )
+    assert forbidden.status_code == HTTPStatus.FORBIDDEN
+
+    replaced = client.put(
+        f'/users/{user.id}/administrative-capabilities',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+        json={
+            'manage_library_calendar': False,
+            'manage_circulation_rules': True,
+        },
+    )
+    assert replaced.json()['capabilities'] == ['manage_circulation_rules']
+
+
+def test_update_administrative_capabilities_rejects_non_librarian(
+    client, student, school_admin_token
+):
+    response = client.put(
+        f'/users/{student.id}/administrative-capabilities',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+        json={'manage_library_calendar': True},
+    )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+
+
+def test_update_user_validation_and_missing_target(client, user, token):
+    empty = client.put(
+        f'/users/{user.id}',
+        headers={'Authorization': f'Bearer {token}'},
+        json={},
+    )
+    assert empty.status_code == HTTPStatus.BAD_REQUEST
+
+    invalid_cpf = client.put(
+        f'/users/{user.id}',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'cpf': '11111111111'},
+    )
+    assert invalid_cpf.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+    missing = client.put(
+        '/users/99999',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'name': 'Não existe'},
+    )
+    assert missing.status_code == HTTPStatus.NOT_FOUND
+
+
+def test_update_user_cpf_and_student_fields(
+    client, student, school_admin_token
+):
+    response = client.put(
+        f'/users/{student.id}',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+        json={
+            'cpf': '39053344705',
+            'name': 'Aluno Atualizado',
+            'birthdate': '2013-02-01',
+            'turma_numero': 9,
+            'turma_letra': 'C',
+        },
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['name'] == 'Aluno Atualizado'
+    assert response.json()['cpf_masked'].endswith('-05')
+
+
+def test_create_student_super_admin_without_school_is_rejected(
+    client, super_admin_token
+):
+    response = client.post(
+        '/users/students',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={
+            'name': 'Sem escola',
+            'cpf': '39053344705',
+            'birthdate': '2015-01-01',
+            'turma_numero': 1,
+            'turma_letra': 'A',
+        },
+    )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+
+
+def test_student_username_is_made_unique(
+    client, school_admin_token
+):
+    payload = {
+        'name': 'Aluno Repetido',
+        'cpf': '39053344705',
+        'birthdate': '2015-01-01',
+        'turma_numero': 1,
+        'turma_letra': 'A',
+    }
+    first = client.post(
+        '/users/students', headers={'Authorization': f'Bearer {school_admin_token}'},
+        json=payload,
+    )
+    second = client.post(
+        '/users/students', headers={'Authorization': f'Bearer {school_admin_token}'},
+        json={**payload, 'cpf': '52998224725'},
+    )
+    assert first.status_code == HTTPStatus.CREATED
+    assert second.status_code == HTTPStatus.CREATED
+    assert second.json()['username'] == f"{first.json()['username']}.1"
+
+
 async def _commit_user(session):
     await session.commit()

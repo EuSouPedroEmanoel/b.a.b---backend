@@ -1,9 +1,11 @@
 import asyncio
 from http import HTTPStatus
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -11,9 +13,16 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from src.models import BooksStates, Reservation, ReservationStatus, User
-from src.routers.reservations import create_reservation
+from src.models import (
+    BookCopy,
+    BooksStates,
+    Reservation,
+    ReservationStatus,
+    User,
+)
+from src.routers import reservations as reservations_router
 from src.schemas import ReservationCreate
+from src.utils.reservation_queue import promote_copy_to_next_reservation
 from tests.factories import BookCopyFactory, ReservationFactory
 
 
@@ -133,6 +142,271 @@ async def test_create_reservation_when_available_fails(
     assert resp.status_code == HTTPStatus.CONFLICT
 
 
+@pytest.mark.asyncio
+async def test_create_reservation_respects_active_limit(
+    session, client, user, student, student_token, book
+):
+    from tests.factories import BookFactory
+
+    books = [book]
+    for index in range(3):
+        extra = BookFactory(user_id=user.id)
+        session.add(extra)
+        await session.commit()
+        await session.refresh(extra)
+        books.append(extra)
+
+    for index, current_book in enumerate(books):
+        copy = BookCopyFactory(
+            book_id=current_book.id,
+            user_id=user.id,
+            school_id=user.school_id,
+            state=BooksStates.BORROWED,
+            code=f'LIMIT-RES-{index}',
+        )
+        session.add(copy)
+    await session.commit()
+
+    for current_book in books[:3]:
+        response = client.post(
+            '/reservations/',
+            headers={'Authorization': f'Bearer {student_token}'},
+            json={'book_id': current_book.id},
+        )
+        assert response.status_code == HTTPStatus.CREATED
+
+    limited = client.post(
+        '/reservations/',
+        headers={'Authorization': f'Bearer {student_token}'},
+        json={'book_id': books[3].id},
+    )
+    assert limited.status_code == HTTPStatus.CONFLICT
+    assert 'Limite de reservas' in limited.json()['detail']
+
+
+@pytest.mark.asyncio
+async def test_get_reservation_access_and_queue(
+    session, client, user, student, teacher, student_token, book, other_school
+):
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        state=BooksStates.BORROWED,
+        code='GET-RESERVATION',
+    )
+    session.add(copy)
+    await session.flush()
+    first = ReservationFactory(
+        book_id=book.id,
+        user_id=student.id,
+        school_id=user.school_id,
+        status=ReservationStatus.ACTIVE,
+    )
+    second = ReservationFactory(
+        book_id=book.id,
+        user_id=teacher.id,
+        school_id=user.school_id,
+        status=ReservationStatus.READY,
+        copy_id=copy.id,
+    )
+    foreign = ReservationFactory(
+        book_id=book.id,
+        user_id=student.id,
+        school_id=other_school.id,
+        status=ReservationStatus.ACTIVE,
+    )
+    session.add_all([first, second, foreign])
+    await session.commit()
+    await session.refresh(first)
+    await session.refresh(foreign)
+
+    own = client.get(
+        f'/reservations/{first.id}',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+    assert own.status_code == HTTPStatus.OK
+    assert own.json()['queue_position'] == 1
+    assert own.json()['queue_total'] == 2
+
+    other_reader = client.get(
+        f'/reservations/{second.id}',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+    assert other_reader.status_code == HTTPStatus.FORBIDDEN
+
+    foreign_response = client.get(
+        f'/reservations/{foreign.id}',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+    assert foreign_response.status_code == HTTPStatus.NOT_FOUND
+
+
+def test_active_reservation_integrity_helper():
+    matching = IntegrityError('insert', {}, Exception())
+    matching.orig.diag = type(
+        'Diag', (), {'constraint_name': 'uq_reservations_active_user_book_school'}
+    )()
+    assert reservations_router._is_active_reservation_conflict(matching)
+
+    other = IntegrityError('insert', {}, Exception())
+    other.orig.diag = type('Diag', (), {'constraint_name': 'other_constraint'})()
+    assert not reservations_router._is_active_reservation_conflict(other)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('constraint_name, expected_status', [
+    ('uq_reservations_active_user_book_school', HTTPStatus.CONFLICT),
+    ('other_constraint', None),
+])
+async def test_reservation_integrity_error_handling(
+    session,
+    client,
+    student,
+    student_token,
+    user,
+    book,
+    monkeypatch,
+    constraint_name,
+    expected_status,
+):
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        state=BooksStates.BORROWED,
+        code=f'INTEGRITY-{constraint_name}',
+    )
+    session.add(copy)
+    await session.commit()
+
+    error = IntegrityError('insert', {}, Exception())
+    error.orig.diag = type(
+        'Diag', (), {'constraint_name': constraint_name}
+    )()
+
+    async def fail_commit():
+        raise error
+
+    monkeypatch.setattr(session, 'commit', fail_commit)
+
+    def request():
+        return client.post(
+            '/reservations/',
+            headers={'Authorization': f'Bearer {student_token}'},
+            json={'book_id': book.id},
+        )
+    if expected_status is None:
+        with pytest.raises(IntegrityError):
+            request()
+    else:
+        response = request()
+        assert response.status_code == expected_status
+        assert response.json()['detail'] == 'Active reservation already exists'
+
+
+@pytest.mark.asyncio
+async def test_get_reservation_not_found(client, student_token):
+    response = client.get(
+        '/reservations/99999',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_cancel_ready_reservation_releases_copy(
+    session, client, student, student_token, user, book
+):
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        state=BooksStates.RESERVED,
+        code='CANCEL-READY',
+    )
+    session.add(copy)
+    await session.flush()
+    reservation = ReservationFactory(
+        book_id=book.id,
+        user_id=student.id,
+        school_id=user.school_id,
+        status=ReservationStatus.READY,
+        copy_id=copy.id,
+    )
+    session.add(reservation)
+    await session.commit()
+    await session.refresh(reservation)
+    copy_id = copy.id
+
+    response = client.delete(
+        f'/reservations/{reservation.id}',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+    assert response.status_code == HTTPStatus.OK
+    session.expire_all()
+    assert (await session.get(BookCopy, copy_id)).state == BooksStates.AVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_cancel_reservation_disappears_after_initial_lookup(
+    session, student, user, book, monkeypatch
+):
+    reservation = ReservationFactory(
+        book_id=book.id,
+        user_id=student.id,
+        school_id=user.school_id,
+        status=ReservationStatus.ACTIVE,
+    )
+    session.add(reservation)
+    await session.commit()
+    await session.refresh(reservation)
+
+    monkeypatch.setattr(
+        reservations_router,
+        'lock_book_queue',
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        session,
+        'scalar',
+        AsyncMock(side_effect=[reservation, None]),
+    )
+    with pytest.raises(HTTPException) as error:
+        await reservations_router.cancel_reservation(
+            reservation.id, session, student
+        )
+    assert error.value.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_queue_expires_ineligible_reader(
+    session, student, user, book
+):
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        state=BooksStates.BORROWED,
+    )
+    student.is_active = False
+    session.add(student)
+    reservation = ReservationFactory(
+        book_id=book.id,
+        user_id=student.id,
+        school_id=user.school_id,
+        status=ReservationStatus.ACTIVE,
+    )
+    session.add_all([copy, reservation])
+    await session.commit()
+    await session.refresh(copy)
+
+    promoted = await promote_copy_to_next_reservation(session, copy)
+    assert promoted is None
+    assert reservation.status == ReservationStatus.EXPIRED
+    assert copy.state == BooksStates.AVAILABLE
+
+
 def test_create_reservation_forbidden_for_librarian(client, token, book):
     resp = client.post(
         '/reservations/',
@@ -217,7 +491,7 @@ async def test_concurrent_reservations_same_reader_are_serialized(
                 await start_barrier.wait()
                 outcome = None
                 try:
-                    result = await create_reservation(
+                    result = await reservations_router.create_reservation(
                         ReservationCreate(book_id=book.id), tx, reader
                     )
                     outcome = ('created', result['id'])
@@ -353,9 +627,12 @@ async def test_list_reservations_pagination(
         headers={'Authorization': f'Bearer {student_token}'},
     )
     assert resp.status_code == HTTPStatus.OK
-    assert resp.json()['total'] >= 3
-    assert resp.json()['size'] == 2
-    assert len(resp.json()['items']) == 2
+    data = resp.json()
+    assert data['total'] == 3
+    assert data['page'] == 1
+    assert data['size'] == 2
+    assert data['pages'] == 2
+    assert len(data['items']) == 2
 
 
 def test_create_reservation_without_school_forbidden(client, book):
@@ -495,7 +772,10 @@ async def test_list_reservations_filters(
         '/reservations/', headers={'Authorization': f'Bearer {student_token}'}
     )
     assert resp.status_code == HTTPStatus.OK
-    assert all(x['user_id'] == student.id for x in resp.json()['items'])
+    student_items = resp.json()['items']
+    assert resp.json()['total'] == 1
+    assert [item['id'] for item in student_items] == [r1.json()['id']]
+    assert all(item['user_id'] == student.id for item in student_items)
     # super_admin sees all (skipped, requires fixture)
     # librarian sees school scoped
     lib_token = client.post(
@@ -506,20 +786,27 @@ async def test_list_reservations_filters(
         '/reservations/', headers={'Authorization': f'Bearer {lib_token}'}
     )
     assert resp_lib.status_code == HTTPStatus.OK
-    assert resp_lib.json()['total'] >= 2
+    assert resp_lib.json()['total'] == 2
     # filter by status
     resp_status = client.get(
         '/reservations/?status=active',
         headers={'Authorization': f'Bearer {lib_token}'},
     )
     assert resp_status.status_code == HTTPStatus.OK
+    assert resp_status.json()['total'] == 2
+    assert {item['id'] for item in resp_status.json()['items']} == {
+        r1.json()['id'], r2.json()['id']
+    }
     # filter by book_id
     resp_book = client.get(
         f'/reservations/?book_id={books[0].id}',
         headers={'Authorization': f'Bearer {lib_token}'},
     )
     assert resp_book.status_code == HTTPStatus.OK
-    assert all(x['book_id'] == books[0].id for x in resp_book.json()['items'])
+    assert resp_book.json()['total'] == 1
+    assert [item['id'] for item in resp_book.json()['items']] == [
+        r1.json()['id']
+    ]
 
 
 def test_list_reservations_without_school_forbidden(client):
@@ -596,6 +883,8 @@ async def test_list_my_reservations_filters(
         headers={'Authorization': f'Bearer {student_token}'},
     )
     assert resp.status_code == HTTPStatus.OK
+    assert resp.json()['total'] == 1
+    assert [item['id'] for item in resp.json()['items']] == [r.json()['id']]
     assert all(x['status'] == 'active' for x in resp.json()['items'])
     # filter by book_id
     resp2 = client.get(
@@ -603,6 +892,8 @@ async def test_list_my_reservations_filters(
         headers={'Authorization': f'Bearer {student_token}'},
     )
     assert resp2.status_code == HTTPStatus.OK
+    assert resp2.json()['total'] == 1
+    assert [item['id'] for item in resp2.json()['items']] == [r.json()['id']]
     assert all(x['book_id'] == b1.id for x in resp2.json()['items'])
 
 

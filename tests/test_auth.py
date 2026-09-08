@@ -12,8 +12,10 @@ def test_get_token(client, user):
     token = response.json()
 
     assert response.status_code == HTTPStatus.OK
+    assert set(token) == {'access_token', 'refresh_token', 'token_type'}
     assert token['token_type'] == 'Bearer'
-    assert 'access_token' in token
+    assert token['access_token']
+    assert token['refresh_token']
 
 
 def test_get_token_by_email(client, user):
@@ -23,7 +25,9 @@ def test_get_token_by_email(client, user):
     )
 
     assert response.status_code == HTTPStatus.OK
-    assert 'access_token' in response.json()
+    assert response.json()['token_type'] == 'Bearer'
+    assert response.json()['access_token']
+    assert response.json()['refresh_token']
 
 
 def test_get_token_by_cpf(client, school, school_admin, school_admin_token):
@@ -59,6 +63,7 @@ def test_raise_login_for_access_token_not_found_user(client):
     )
 
     assert response.status_code == HTTPStatus.UNAUTHORIZED
+    assert response.json() == {'detail': 'Username or Password is wrong'}
 
 
 def test_raise_login_for_access_token_incorrect_password(client, user):
@@ -71,6 +76,7 @@ def test_raise_login_for_access_token_incorrect_password(client, user):
     )
 
     assert response.status_code == HTTPStatus.UNAUTHORIZED
+    assert response.json() == {'detail': 'Username or Password is wrong'}
 
 
 def test_token_expired_after_time(client, user):
@@ -98,14 +104,15 @@ def test_token_expired_after_time(client, user):
 
 def test_refresh_token(client, token):
     response = client.post(
-        'auth/refresh_token', headers={'Authorization': f'Bearer {token}'}
+        '/auth/refresh_token', headers={'Authorization': f'Bearer {token}'}
     )
 
     data = response.json()
 
     assert response.status_code == HTTPStatus.OK
-    assert 'access_token' in data
-    assert 'token_type' in data
+    assert set(data) == {'access_token', 'token_type'}
+    assert data['access_token']
+    assert data['token_type'] == 'Bearer'
 
 
 def test_token_expired_dont_refresh(client, user):
@@ -189,6 +196,7 @@ def test_refresh_missing_jti_or_sub(client):
     )
     resp = client.post('/auth/refresh', json={'refresh_token': token_no_jti})
     assert resp.status_code == HTTPStatus.UNAUTHORIZED
+    assert resp.json() == {'detail': 'Invalid refresh token'}
     # missing sub
     token_no_sub = encode(
         {'jti': 'some-jti', 'exp': exp, 'type': 'refresh'},
@@ -197,6 +205,7 @@ def test_refresh_missing_jti_or_sub(client):
     )
     resp2 = client.post('/auth/refresh', json={'refresh_token': token_no_sub})
     assert resp2.status_code == HTTPStatus.UNAUTHORIZED
+    assert resp2.json() == {'detail': 'Invalid refresh token'}
 
 
 def test_refresh_user_not_found_or_inactive(client, user):
@@ -239,6 +248,7 @@ def test_logout_invalid_token(client, user):
         json={'refresh_token': 'invalid.token'},
     )
     assert resp2.status_code == HTTPStatus.UNAUTHORIZED
+    assert resp2.json() == {'detail': 'Invalid refresh token'}
 
 
 def test_logout_expired_token(client, user):
@@ -273,6 +283,7 @@ def test_logout_expired_token(client, user):
         json={'refresh_token': exp_token},
     )
     assert resp2.status_code == HTTPStatus.UNAUTHORIZED
+    assert resp2.json() == {'detail': 'Invalid refresh token'}
 
 
 def test_logout_wrong_type(client, user):
@@ -288,7 +299,7 @@ def test_logout_wrong_type(client, user):
         json={'refresh_token': access},
     )
     assert resp2.status_code == HTTPStatus.UNAUTHORIZED
-    assert resp2.json()['detail'] == 'Invalid token type'
+    assert resp2.json() == {'detail': 'Invalid token type'}
 
 
 def test_logout_missing_jti_or_exp(client, user):
@@ -317,6 +328,7 @@ def test_logout_missing_jti_or_exp(client, user):
         json={'refresh_token': token_no_jti},
     )
     assert resp2.status_code == HTTPStatus.UNAUTHORIZED
+    assert resp2.json() == {'detail': 'Invalid refresh token'}
     token_no_exp = encode(
         {'sub': user.username, 'jti': 'jti-no-exp', 'type': 'refresh'},
         settings.SECRET_KEY,
@@ -328,6 +340,7 @@ def test_logout_missing_jti_or_exp(client, user):
         json={'refresh_token': token_no_exp},
     )
     assert resp3.status_code == HTTPStatus.UNAUTHORIZED
+    assert resp3.json() == {'detail': 'Invalid refresh token'}
 
 
 def test_logout_already_logged_out(client, user):

@@ -9,14 +9,9 @@ def test_soft_delete_user_hides_from_list_and_login(client, user, token):
         f'/users/{user.id}', headers={'Authorization': f'Bearer {token}'}
     )
     assert resp.status_code == HTTPStatus.OK
-    # should not appear in list
+    # An inactive account can no longer use the access token.
     resp2 = client.get('/users/', headers={'Authorization': f'Bearer {token}'})
-    # token's user is inactive now, so get_current_user should forbid
-    assert resp2.status_code in {
-        HTTPStatus.FORBIDDEN,
-        HTTPStatus.UNAUTHORIZED,
-        HTTPStatus.OK,
-    }
+    assert resp2.status_code == HTTPStatus.FORBIDDEN
     # login should fail for inactive user
     resp3 = client.post(
         '/auth/token',
@@ -133,23 +128,6 @@ def test_rate_limit_not_blocking_normal_use(client, user):
             data={'username': user.username, 'password': user.clean_password},
         )
         assert r.status_code == HTTPStatus.OK
-
-
-def test_create_user_invalid_role_via_extra(client, school, super_admin_token):
-    # also test via extra to ensure schemas validator is hit (duplicate but ensures coverage)
-    resp = client.post(
-        '/users/',
-        headers={'Authorization': f'Bearer {super_admin_token}'},
-        json={
-            'username': 'invalid_extra',
-            'email': 'invalid_extra@ex.com',
-            'cpf': '11144477735',
-            'password': 'secret',
-            'role': 'school_admin',
-            'school_id': school.id,
-        },
-    )
-    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 def test_book_schema_empty_title_direct():

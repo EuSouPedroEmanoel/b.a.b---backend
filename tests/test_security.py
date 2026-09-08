@@ -71,6 +71,8 @@ def test_get_current_user_expired_token(client):
     headers = {'Authorization': f'Bearer {token}'}
     response = client.get('/users/', headers=headers)
     assert response.status_code == HTTPStatus.UNAUTHORIZED
+    assert response.json() == {'detail': 'Could not validate credentials'}
+    assert response.headers['WWW-Authenticate'] == 'Bearer'
 
 
 def test_verify_password_and_hash():
@@ -92,6 +94,7 @@ async def test_role_checker_forbidden(user):
     with pytest.raises(HTTPException) as exc:
         await checker(user)
     assert exc.value.status_code == HTTPStatus.FORBIDDEN
+    assert exc.value.detail == 'Not enough permissions'
 
 
 @pytest.mark.asyncio
@@ -105,6 +108,7 @@ async def test_get_current_active_super_admin_forbidden(user):
     with pytest.raises(HTTPException) as exc:
         await get_current_active_super_admin(user)
     assert exc.value.status_code == HTTPStatus.FORBIDDEN
+    assert exc.value.detail == 'Not enough permissions'
 
 
 @pytest.mark.asyncio
@@ -124,6 +128,7 @@ async def test_get_current_school_admin_forbidden(user):
     with pytest.raises(HTTPException) as exc:
         await get_current_school_admin(user)
     assert exc.value.status_code == HTTPStatus.FORBIDDEN
+    assert exc.value.detail == 'Not enough permissions'
 
 
 @pytest.mark.asyncio
@@ -195,6 +200,7 @@ async def test_get_refresh_user_invalid_type(session, user):
     with pytest.raises(HTTPException) as exc:
         await get_refresh_user(token, session)
     assert exc.value.status_code == HTTPStatus.UNAUTHORIZED
+    assert exc.value.detail == 'Invalid refresh token'
 
 
 @pytest.mark.asyncio
@@ -214,8 +220,10 @@ async def test_get_refresh_user_missing_jti(session, user):
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM,
     )
-    with pytest.raises(HTTPException):
+    with pytest.raises(HTTPException) as exc:
         await get_refresh_user(token, session)
+    assert exc.value.status_code == HTTPStatus.UNAUTHORIZED
+    assert exc.value.detail == 'Invalid refresh token'
 
 
 @pytest.mark.asyncio
@@ -255,16 +263,20 @@ async def test_get_refresh_user_expired(session, user):
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM,
     )
-    with pytest.raises(HTTPException):
+    with pytest.raises(HTTPException) as exc:
         await get_refresh_user(token, session)
+    assert exc.value.status_code == HTTPStatus.UNAUTHORIZED
+    assert exc.value.detail == 'Invalid refresh token'
 
 
 @pytest.mark.asyncio
 async def test_get_refresh_user_invalid_token(session):
     from src.security import get_refresh_user
 
-    with pytest.raises(HTTPException):
+    with pytest.raises(HTTPException) as exc:
         await get_refresh_user('invalid.token', session)
+    assert exc.value.status_code == HTTPStatus.UNAUTHORIZED
+    assert exc.value.detail == 'Invalid refresh token'
 
 
 @pytest.mark.asyncio
@@ -289,8 +301,10 @@ async def test_get_refresh_user_not_found(session):
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM,
     )
-    with pytest.raises(HTTPException):
+    with pytest.raises(HTTPException) as exc:
         await get_refresh_user(token, session)
+    assert exc.value.status_code == HTTPStatus.UNAUTHORIZED
+    assert exc.value.detail == 'Invalid refresh token'
 
 
 @pytest.mark.asyncio
@@ -302,5 +316,7 @@ async def test_get_refresh_user_inactive(session, user):
     user.is_active = False
     session.add(user)
     await session.commit()
-    with pytest.raises(HTTPException):
+    with pytest.raises(HTTPException) as exc:
         await get_refresh_user(refresh, session)
+    assert exc.value.status_code == HTTPStatus.UNAUTHORIZED
+    assert exc.value.detail == 'Invalid refresh token'

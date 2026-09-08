@@ -23,7 +23,7 @@ from src.models import (
     User,
     UserRole,
 )
-from src.routers.loans import create_loan
+from src.routers import loans as loans_router
 from src.schemas import LoanCreate
 from src.security import get_password_hash
 from src.utils.cpf import cpf_storage_values
@@ -241,7 +241,7 @@ async def test_concurrent_loans_same_copy_are_serialized(
                 await start_barrier.wait()
                 outcome = None
                 try:
-                    result = await create_loan(
+                    result = await loans_router.create_loan(
                         LoanCreate(copy_id=copy.id, user_id=student.id),
                         tx,
                         librarian,
@@ -466,31 +466,20 @@ async def test_progressive_penalty_counts_overdue_returns_not_late_days(
     await session.refresh(copy)
 
     with freeze_time('2026-02-01 10:00:00'):
-        resp = client.post(
-            '/loans/',
-            headers={'Authorization': f'Bearer {token}'},
-            json={'copy_id': copy.id, 'user_id': student.id},
+        created = await loans_router.create_loan(
+            LoanCreate(copy_id=copy.id, user_id=student.id), session, user
         )
-        loan_id = resp.json()['id']
+        loan_id = created.id
 
-    with freeze_time(
-        '2026-02-21 10:00:00'
-    ):  # 6 days late? need 20 days late => return 2026-02-21? due 02-15 => 6 late . Need 20 late => due 02-15 return 03-07
-        pass
-
-    # manually set loan late_days to 20 via direct DB to simulate large penalty without waiting 20 days
-    # create a second copy and make penalty large
-    from src.models import Loan
-
+    # Persist a historical return directly: this scenario concerns the
+    # penalty resolver's interpretation of old circulation history, while
+    # ``test_return_late_calculates_penalty`` covers the return endpoint.
     loan = await session.get(Loan, loan_id)
     loan.returned_at = datetime(2026, 2, 21, tzinfo=ZoneInfo('UTC'))
     loan.late_days = 20
     loan.status = LoanStatus.RETURNED
-    # also need to return copy state
     db_copy = await session.get(BookCopy, copy.id)
     db_copy.state = BooksStates.AVAILABLE
-    session.add(loan)
-    session.add(db_copy)
     await session.commit()
 
     copy2 = BookCopyFactory(
@@ -506,14 +495,11 @@ async def test_progressive_penalty_counts_overdue_returns_not_late_days(
     session.expunge(copy2)
 
     with freeze_time('2026-03-01 10:00:00'):
-        resp2 = client.post(
-            '/loans/',
-            headers={'Authorization': f'Bearer {token}'},
-            json={'copy_id': copy2.id, 'user_id': student.id},
+        created = await loans_router.create_loan(
+            LoanCreate(copy_id=copy2.id, user_id=student.id), session, user
         )
-        assert resp2.status_code == HTTPStatus.CREATED
-        due2 = datetime.fromisoformat(resp2.json()['due_date'])
-        # 14 - 1 progressive reduction => due 2026-03-14
+        due2 = created.due_date
+        # One late return reduces the next 14-day loan by exactly one day.
         assert due2.date().isoformat() == '2026-03-14'
 
 
@@ -651,12 +637,6 @@ async def test_pickup_requires_ready_reservation_and_assigned_copy(
         },
     )
     assert wrong_copy_response.status_code == HTTPStatus.CONFLICT
-
-
-def test_list_loans_pagination(client, user, token, student, book, session):
-    # create a few loans via API to test pagination
-    # we already have one loan from previous tests? each test has isolated DB? No, session is reused per test? Actually tests use same postgres container but tables dropped per session fixture? session is function scope with create_all/drop_all? No it's function scope with create_all before yield and drop_all after. So each test gets fresh DB. So here create.
-    pass
 
 
 @pytest.mark.asyncio
@@ -815,18 +795,12 @@ async def test_student_cannot_see_other_loans(
         },
     ).json()['access_token']
 
-    # teacher trying to get student's loan should be forbidden or not found
+    # Same-school readers can consult only their own loans.
     r = client.get(
         f'/loans/{loan_id}',
         headers={'Authorization': f'Bearer {teacher_token}'},
     )
-    # teacher is not owner but same school; spec says student/teacher can only see own, so should be forbidden
-    assert r.status_code in {
-        HTTPStatus.FORBIDDEN,
-        HTTPStatus.NOT_FOUND,
-        HTTPStatus.OK,
-    }
-    # if OK, at least ensure teacher cannot list all loans?
+    assert r.status_code == HTTPStatus.FORBIDDEN
 
 
 @pytest.mark.asyncio
@@ -1077,6 +1051,70 @@ async def test_return_loan_not_active(
     )
     assert r2.status_code == HTTPStatus.CONFLICT
     assert 'not active' in r2.json()['detail'].lower()
+
+
+@pytest.mark.asyncio
+async def test_super_admin_internal_code_scope_and_ambiguity(
+    session, super_admin, school, other_school, book
+):
+    first = BookCopyFactory(
+        book_id=book.id,
+        user_id=super_admin.id,
+        school_id=school.id,
+        code='DUPLICATE-INTERNAL-CODE',
+        state=BooksStates.AVAILABLE,
+    )
+    second = BookCopyFactory(
+        book_id=book.id,
+        user_id=super_admin.id,
+        school_id=other_school.id,
+        code='DUPLICATE-INTERNAL-CODE',
+        state=BooksStates.AVAILABLE,
+    )
+    session.add_all([first, second])
+    await session.commit()
+
+    scoped, scoped_school = await loans_router._resolve_copy(
+        LoanCreate(
+            internal_code='DUPLICATE-INTERNAL-CODE',
+            school_id=school.id,
+            cpf='52998224725',
+        ),
+        session,
+        super_admin,
+    )
+    assert scoped.id == first.id
+    assert scoped_school == school.id
+
+    with pytest.raises(HTTPException) as error:
+        await loans_router._resolve_copy(
+            LoanCreate(
+                internal_code='DUPLICATE-INTERNAL-CODE',
+                cpf='52998224725',
+            ),
+            session,
+            super_admin,
+        )
+    assert error.value.status_code == HTTPStatus.CONFLICT
+
+    with pytest.raises(HTTPException) as not_found:
+        await loans_router._resolve_copy(
+            LoanCreate(
+                internal_code='UNKNOWN-INTERNAL-CODE',
+                cpf='52998224725',
+            ),
+            session,
+            super_admin,
+        )
+    assert not_found.value.status_code == HTTPStatus.NOT_FOUND
+
+    with pytest.raises(HTTPException) as missing:
+        await loans_router._resolve_copy(
+            LoanCreate(copy_id=99999, user_id=1),
+            session,
+            super_admin,
+        )
+    assert missing.value.status_code == HTTPStatus.NOT_FOUND
 
 
 @pytest.mark.asyncio

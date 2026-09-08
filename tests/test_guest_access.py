@@ -68,7 +68,8 @@ async def test_guest_can_list_and_view_public_books(
 
     listed = client.get('/books/', headers=_auth(token))
     assert listed.status_code == HTTPStatus.OK
-    assert listed.json()['items']
+    assert listed.json()['total'] == 1
+    assert len(listed.json()['items']) == 1
     guest_book = listed.json()['items'][0]
     assert guest_book['id'] == book.id
     assert set(guest_book) == set(
@@ -116,6 +117,7 @@ async def test_guest_list_only_returns_books_openable_in_its_school(
     listed = client.get('/books/', headers=_auth(token))
 
     assert listed.status_code == HTTPStatus.OK
+    assert listed.json()['total'] == 1
     ids = [item['id'] for item in listed.json()['items']]
     assert visible.id in ids
     assert other_school_book.id not in ids

@@ -48,6 +48,7 @@ def test_create_book(client, token):
             'isbn': '978-3-16-148410-0',
         },
     )
+    assert response.status_code == HTTPStatus.CREATED
     data = response.json()
     assert data['id'] == 1
     assert data['title'] == 'Test book'
@@ -138,6 +139,7 @@ async def test_list_books_should_return_5_books(session, client, user, token):
     )
 
     assert len(response.json()['items']) == expected_books
+    assert response.json()['total'] == expected_books
     assert response.json()['items'] == expected_json
 
 
@@ -171,6 +173,10 @@ async def test_list_books_pagination_should_return_2_books(
     )
 
     assert len(response.json()['items']) == expected_books
+    assert response.json()['total'] == 5
+    assert response.json()['page'] == 1
+    assert response.json()['size'] == 2
+    assert response.json()['pages'] == 3
     assert response.json()['items'] == expected_json
 
 

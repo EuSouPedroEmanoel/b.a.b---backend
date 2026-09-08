@@ -1,8 +1,9 @@
 from http import HTTPStatus
 
 import pytest
+from sqlalchemy import select
 
-from src.models import BookCondition, BooksStates, User, UserRole
+from src.models import BookCondition, BookCopy, BooksStates, User, UserRole
 from src.schemas import BookCopyPublic
 from src.security import get_password_hash
 from tests.factories import BookCopyFactory, BookFactory
@@ -135,6 +136,7 @@ async def test_list_copies_should_return_5_copies(
     )
 
     assert len(response.json()['items']) == expected_copies
+    assert response.json()['total'] == expected_copies
     assert response.json()['items'] == expected_json
 
 
@@ -169,6 +171,10 @@ async def test_list_copies_pagination_should_return_2_copies(
     )
 
     assert len(response.json()['items']) == expected_copies
+    assert response.json()['total'] == 5
+    assert response.json()['page'] == 1
+    assert response.json()['size'] == 2
+    assert response.json()['pages'] == 3
     assert response.json()['items'] == expected_json
 
 
@@ -240,6 +246,7 @@ async def test_list_copies_filter_state_should_return_5_copies(
 
     assert response.status_code == HTTPStatus.OK
     assert len(response.json()['items']) == expected_copies
+    assert response.json()['total'] == expected_copies
     assert response.json()['items'] == expected_json
 
 
@@ -282,6 +289,7 @@ async def test_list_copies_filter_condition_should_return_5_copies(
 
     assert response.status_code == HTTPStatus.OK
     assert len(response.json()['items']) == expected_copies
+    assert response.json()['total'] == expected_copies
     assert response.json()['items'] == expected_json
 
 
@@ -334,6 +342,9 @@ async def test_patch_copy(session, client, user, token, book):
     assert response.status_code == HTTPStatus.OK
     assert response.json()['state'] == 'borrowed'
     assert response.json()['notes'] == 'Emprestado para Maria'
+    persisted = await session.scalar(select(BookCopy).where(BookCopy.id == copy.id))
+    assert persisted.state == BooksStates.BORROWED
+    assert persisted.notes == 'Emprestado para Maria'
 
 
 def test_patch_copy_error(client, token):
@@ -367,6 +378,7 @@ async def test_delete_copy(session, client, user, token, book):
     assert response.json() == {
         'message': 'Copy has been deleted successfully.'
     }
+    assert await session.scalar(select(BookCopy).where(BookCopy.id == copy.id)) is None
 
 
 def test_delete_copy_error(client, token):
@@ -376,37 +388,6 @@ def test_delete_copy_error(client, token):
 
     assert response.status_code == HTTPStatus.NOT_FOUND
     assert response.json() == {'detail': 'Copy not found.'}
-
-
-@pytest.mark.asyncio
-async def test_delete_book_cascades_copies(
-    session, client, user, super_admin_token, book
-):
-    copy = BookCopyFactory(
-        book_id=book.id,
-        user_id=user.id,
-        school_id=user.school_id,
-    )
-    session.add(copy)
-    await session.commit()
-    await session.refresh(copy)
-    copy_id = copy.id
-    session.expunge(copy)
-
-    response = client.delete(
-        f'/books/{book.id}',
-        headers={'Authorization': f'Bearer {super_admin_token}'},
-    )
-    assert response.status_code == HTTPStatus.OK
-    assert response.json() == {
-        'message': 'Book has been deactivated successfully.'
-    }
-
-    response = client.get(
-        f'/copies/{copy_id}',
-        headers={'Authorization': f'Bearer {super_admin_token}'},
-    )
-    assert response.status_code in {HTTPStatus.OK, HTTPStatus.NOT_FOUND}
 
 
 @pytest.mark.asyncio

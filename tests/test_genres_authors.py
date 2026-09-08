@@ -1,12 +1,12 @@
 from http import HTTPStatus
 
-from src.models import Genre
-
 
 def test_list_genres_empty(client, token):
     resp = client.get('/genres/', headers={'Authorization': f'Bearer {token}'})
     assert resp.status_code == HTTPStatus.OK
-    assert 'items' in resp.json()
+    assert resp.json() == {
+        'items': [], 'total': 0, 'page': 1, 'size': 10, 'pages': 0
+    }
 
 
 def test_create_genre_success(client, super_admin_token):
@@ -43,48 +43,35 @@ def test_create_genre_invalid(client, super_admin_token):
     assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
-def test_get_genre_success(client, token, session):
-    # create via direct DB to test get
-    from src.utils.genres import display_name_genre, slugify_genre
-
-    name = display_name_genre('Mistério')
-    slug = slugify_genre(name)
-    g = Genre(name=name, slug=slug)
-    session.add(g)
-
-    import asyncio
-
-    async def _run():
-        await session.commit()
-        await session.refresh(g)
-
-    asyncio.run(_run()) if False else None  # placeholder to avoid async in sync test; use client creation instead
-
-    # use API creation for reliable id
-    resp = client.post(
+def test_get_genre_success(client, token, super_admin_token):
+    created = client.post(
         '/genres/',
-        headers={'Authorization': f'Bearer {token}'},
+        headers={'Authorization': f'Bearer {super_admin_token}'},
         json={'name': 'Aventura Teste'},
     )
-    if resp.status_code == HTTPStatus.CREATED:
-        gid = resp.json()['id']
-        get = client.get(f'/genres/{gid}', headers={'Authorization': f'Bearer {token}'})
-        assert get.status_code == HTTPStatus.OK
+    assert created.status_code == HTTPStatus.CREATED
+    genre = client.get(
+        f"/genres/{created.json()['id']}",
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert genre.status_code == HTTPStatus.OK
+    assert genre.json() == created.json()
 
 
 def test_list_genres_with_q(client, super_admin_token):
-    client.post('/genres/', headers={'Authorization': f'Bearer {super_admin_token}'}, json={'name': 'Biografia'})
+    created = client.post('/genres/', headers={'Authorization': f'Bearer {super_admin_token}'}, json={'name': 'Biografia'})
+    assert created.status_code == HTTPStatus.CREATED
     resp = client.get('/genres/?q=Biograf', headers={'Authorization': f'Bearer {super_admin_token}'})
     assert resp.status_code == HTTPStatus.OK
+    assert resp.json()['total'] == 1
+    assert [item['id'] for item in resp.json()['items']] == [created.json()['id']]
 
 
-def test_delete_genre_forbidden(client, token):
-    # create as super_admin first
-
-    # try delete as librarian -> forbidden
-    resp = client.delete('/genres/1', headers={'Authorization': f'Bearer {token}'})
-    # may be 404 or 403 depending if id exists
-    assert resp.status_code in (HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND)  # noqa: PLR6201
+def test_delete_genre_forbidden(client, token, super_admin_token):
+    created = client.post('/genres/', headers={'Authorization': f'Bearer {super_admin_token}'}, json={'name': 'Protegido'})
+    assert created.status_code == HTTPStatus.CREATED
+    resp = client.delete(f"/genres/{created.json()['id']}", headers={'Authorization': f'Bearer {token}'})
+    assert resp.status_code == HTTPStatus.FORBIDDEN
 
 
 def test_delete_genre_success(client, super_admin_token):
@@ -93,15 +80,18 @@ def test_delete_genre_success(client, super_admin_token):
         headers={'Authorization': f'Bearer {super_admin_token}'},
         json={'name': 'Para Deletar Gen'},
     )
-    if create.status_code == HTTPStatus.CREATED:
-        gid = create.json()['id']
-        delete = client.delete(f'/genres/{gid}', headers={'Authorization': f'Bearer {super_admin_token}'})
-        assert delete.status_code == HTTPStatus.OK
+    assert create.status_code == HTTPStatus.CREATED
+    gid = create.json()['id']
+    delete = client.delete(f'/genres/{gid}', headers={'Authorization': f'Bearer {super_admin_token}'})
+    assert delete.status_code == HTTPStatus.OK
+    assert client.get(f'/genres/{gid}', headers={'Authorization': f'Bearer {super_admin_token}'}).status_code == HTTPStatus.NOT_FOUND
 
 
 def test_list_authors_empty(client, token):
     resp = client.get('/authors/', headers={'Authorization': f'Bearer {token}'})
     assert resp.status_code == HTTPStatus.OK
+    assert resp.json()['items'] == []
+    assert resp.json()['total'] == 0
 
 
 def test_create_author_success(client, super_admin_token):
@@ -126,10 +116,12 @@ def test_create_author_invalid(client, super_admin_token):
 
 
 def test_list_authors_with_q(client, super_admin_token):
-    client.post('/authors/', headers={'Authorization': f'Bearer {super_admin_token}'}, json={'name': 'Jorge Amado'})
+    created = client.post('/authors/', headers={'Authorization': f'Bearer {super_admin_token}'}, json={'name': 'Jorge Amado'})
+    assert created.status_code == HTTPStatus.CREATED
     resp = client.get('/authors/?q=Jorge', headers={'Authorization': f'Bearer {super_admin_token}'})
     assert resp.status_code == HTTPStatus.OK
-    assert any('Jorge' in i['name'] for i in resp.json()['items'])
+    assert resp.json()['total'] == 1
+    assert [item['id'] for item in resp.json()['items']] == [created.json()['id']]
 
 
 def test_get_author_not_found(client, token):
@@ -137,17 +129,20 @@ def test_get_author_not_found(client, token):
     assert resp.status_code == HTTPStatus.NOT_FOUND
 
 
-def test_delete_author_forbidden(client, token):
-    resp = client.delete('/authors/1', headers={'Authorization': f'Bearer {token}'})
-    assert resp.status_code in (HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND)  # noqa: PLR6201
+def test_delete_author_forbidden(client, token, super_admin_token):
+    created = client.post('/authors/', headers={'Authorization': f'Bearer {super_admin_token}'}, json={'name': 'Autor Protegido'})
+    assert created.status_code == HTTPStatus.CREATED
+    resp = client.delete(f"/authors/{created.json()['id']}", headers={'Authorization': f'Bearer {token}'})
+    assert resp.status_code == HTTPStatus.FORBIDDEN
 
 
 def test_delete_author_success(client, super_admin_token):
     create = client.post('/authors/', headers={'Authorization': f'Bearer {super_admin_token}'}, json={'name': 'Autor Para Deletar'})
-    if create.status_code == HTTPStatus.CREATED:
-        aid = create.json()['id']
-        delete = client.delete(f'/authors/{aid}', headers={'Authorization': f'Bearer {super_admin_token}'})
-        assert delete.status_code == HTTPStatus.OK
+    assert create.status_code == HTTPStatus.CREATED
+    aid = create.json()['id']
+    delete = client.delete(f'/authors/{aid}', headers={'Authorization': f'Bearer {super_admin_token}'})
+    assert delete.status_code == HTTPStatus.OK
+    assert client.get(f'/authors/{aid}', headers={'Authorization': f'Bearer {super_admin_token}'}).status_code == HTTPStatus.NOT_FOUND
 
 
 def test_book_create_with_genre_author_names(client, token):
@@ -163,8 +158,10 @@ def test_book_create_with_genre_author_names(client, token):
     )
     assert resp.status_code == HTTPStatus.CREATED
     data = resp.json()
-    assert 'Ficção' in data['genre_names'] or 'Ficção' in str(data['genres'])
-    assert len(data['authors']) >= 2
+    assert data['genre_names'] == ['Ficção', 'Romance']
+    assert [author['name'] for author in data['authors']] == [
+        'Autor Teste Um', 'Autor Teste Dois'
+    ]
 
 
 def test_book_create_with_genre_ids(client, token, super_admin_token):
@@ -185,28 +182,35 @@ def test_book_create_with_genre_ids(client, token, super_admin_token):
         },
     )
     assert resp.status_code == HTTPStatus.CREATED
+    assert {genre['id'] for genre in resp.json()['genres']} == {g1['id'], g2['id']}
 
 
 def test_book_patch_clear_genres_authors(client, token):
     create = client.post('/books/', headers={'Authorization': f'Bearer {token}'}, json={'title': 'Livro Patch Clear', 'genre_names': ['Temp']})
     bid = create.json()['id']
+    assert create.status_code == HTTPStatus.CREATED
     patch = client.patch(f'/books/{bid}', headers={'Authorization': f'Bearer {token}'}, json={'genre_ids': [], 'genre_names': [], 'author_ids': [], 'author_names': []})
     assert patch.status_code == HTTPStatus.OK
+    assert patch.json()['genres'] == []
+    assert patch.json()['authors'] == []
 
 
 def test_list_books_q_genre_author(client, token):
     # create book with known genre/author then query via q
-    client.post(
+    created = client.post(
         '/books/',
         headers={'Authorization': f'Bearer {token}'},
         json={'title': 'UniqueTitleXYZ', 'genre_names': ['MisterioQ'], 'author_names': ['AutorQUnico']},
     )
+    assert created.status_code == HTTPStatus.CREATED
     resp = client.get('/books/?q=MisterioQ', headers={'Authorization': f'Bearer {token}'})
     assert resp.status_code == HTTPStatus.OK
-    assert any('UniqueTitleXYZ' in i['title'] for i in resp.json()['items'])
+    assert resp.json()['total'] == 1
+    assert [i['id'] for i in resp.json()['items']] == [created.json()['id']]
     resp2 = client.get('/books/?q=AutorQUnico', headers={'Authorization': f'Bearer {token}'})
     assert resp2.status_code == HTTPStatus.OK
-    assert any('UniqueTitleXYZ' in i['title'] for i in resp2.json()['items'])
+    assert resp2.json()['total'] == 1
+    assert [i['id'] for i in resp2.json()['items']] == [created.json()['id']]
 
 
 def test_list_books_sort_author(client, token):
