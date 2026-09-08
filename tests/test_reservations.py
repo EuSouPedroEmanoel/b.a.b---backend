@@ -827,3 +827,8 @@ async def test_list_reservations_super_admin(
     )
     assert resp.status_code == HTTPStatus.OK
     assert resp.json()['total'] >= 1
+    cancel = client.delete(
+        f'/reservations/{r.json()["id"]}',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+    )
+    assert cancel.status_code == HTTPStatus.FORBIDDEN

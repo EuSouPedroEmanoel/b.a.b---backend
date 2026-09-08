@@ -45,13 +45,12 @@ router = APIRouter(prefix='/loans', tags=['loans'])
 
 Session = Annotated[AsyncSession, Depends(get_session)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
-LibrarianOrAbove = Annotated[
+LoanOperator = Annotated[
     User,
     Depends(
         RoleChecker([
             UserRole.LIBRARIAN,
             UserRole.SCHOOL_ADMIN,
-            UserRole.SUPER_ADMIN,
         ])
     ),
 ]
@@ -192,7 +191,7 @@ async def _resolve_borrower(
 async def create_loan(
     payload: LoanCreate,
     session: Session,
-    current_user: LibrarianOrAbove,
+    current_user: LoanOperator,
 ):
     initial_copy, _ = await _resolve_copy(payload, session, current_user)
     await lock_book_queue(session, initial_copy.book_id)
@@ -270,7 +269,7 @@ async def create_loan(
 async def return_loan(
     loan_id: int,
     session: Session,
-    current_user: LibrarianOrAbove,
+    current_user: LoanOperator,
 ):
     initial_loan = await session.scalar(
         _loan_public_query().where(Loan.id == loan_id)

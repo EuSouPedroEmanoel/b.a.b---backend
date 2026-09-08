@@ -30,9 +30,22 @@ settings = Settings()
 DEV_PASSWORD = 'dev123'
 DEV_SUPER_ADMIN = {
     'username': 'dev',
+    'name': 'Dev Super Admin',
     'email': 'dev@email.com',
     'password': 'dev123',
 }
+
+
+def _display_name(username: str, role: UserRole) -> str:
+    prefix = {
+        UserRole.SCHOOL_ADMIN: 'Admin Escola',
+        UserRole.LIBRARIAN: 'Bibliotecário',
+        UserRole.TEACHER: 'Professor',
+        UserRole.STUDENT: 'Aluno',
+        UserRole.SUPER_ADMIN: 'Super Admin',
+    }[role]
+    suffix = ''.join(char for char in username if char.isdigit()) or username
+    return f'{prefix} {suffix}'
 
 
 def _cpf_with_check(base: str) -> str:
@@ -114,6 +127,7 @@ async def seed_users(session: AsyncSession, schools: list[School]) -> dict:
             continue
         user = User(
             username=username,
+            name=_display_name(username, role),
             email=email,
             password=get_password_hash(DEV_PASSWORD),
             role=role,
@@ -484,6 +498,7 @@ async def seed_dev():
         if not super_admin:
             super_admin = User(
                 username=DEV_SUPER_ADMIN['username'],
+                name=DEV_SUPER_ADMIN['name'],
                 email=DEV_SUPER_ADMIN['email'],
                 password=get_password_hash(DEV_SUPER_ADMIN['password']),
                 role=UserRole.SUPER_ADMIN,

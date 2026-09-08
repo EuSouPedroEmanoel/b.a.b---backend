@@ -89,6 +89,7 @@ def test_create_school_admin_success(client, super_admin_token, school):
         headers={'Authorization': f'Bearer {super_admin_token}'},
         json={
             'username': 'admin_test_school',
+            'name': 'Admin Teste Escola',
             'email': 'admin_test@escola.com',
             'cpf': '11144477735',
             'password': 'secret123',
@@ -96,6 +97,7 @@ def test_create_school_admin_success(client, super_admin_token, school):
     )
     assert resp.status_code == HTTPStatus.CREATED
     assert resp.json()['username'] == 'admin_test_school'
+    assert resp.json()['name'] == 'Admin Teste Escola'
     assert resp.json()['school_id'] == school.id
     assert resp.json()['role'] == 'school_admin'
 

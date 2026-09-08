@@ -23,6 +23,7 @@ async def seed_super_admin():
 
         user = User(
             username=settings.SUPER_ADMIN_USERNAME,
+            name=settings.SUPER_ADMIN_USERNAME,
             email=settings.SUPER_ADMIN_EMAIL,
             password=get_password_hash(settings.SUPER_ADMIN_PASSWORD),
             role=UserRole.SUPER_ADMIN,

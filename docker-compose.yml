@@ -22,7 +22,11 @@ services:
     entrypoint: ./entrypoint.sh
     environment:
       DATABASE_URL: "postgresql+psycopg://root:dev123@float-tasks-db:5432/dev-database"
+      GOOGLE_BOOKS_API_KEY: "${GOOGLE_BOOKS_API_KEY:?GOOGLE_BOOKS_API_KEY must be configured}"
+      SECRET_KEY: "${SECRET_KEY:?SECRET_KEY must be configured}"
       CPF_HMAC_SECRET: "${CPF_HMAC_SECRET:?CPF_HMAC_SECRET must be configured}"
+      ALGORITHM: "${ALGORITHM:-HS256}"
+      ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-240}"
       SEED_DEV: "1"
 
 

@@ -312,6 +312,7 @@ class UserFactory(factory.Factory):
         model = User
 
     username = factory.Sequence(lambda n: f'test{n}')
+    name = factory.LazyAttribute(lambda obj: obj.username)
     email = factory.LazyAttribute(lambda obj: f'{obj.username}@exemple.com')
     password = factory.LazyAttribute(lambda obj: f'{obj.username}@exemple.com')
     role = UserRole.LIBRARIAN

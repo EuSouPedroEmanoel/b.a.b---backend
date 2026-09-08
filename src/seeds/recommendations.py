@@ -44,7 +44,12 @@ from src.utils.genres import display_name_genre, slugify_genre
 settings = Settings()
 
 DEV_PASSWORD = "dev123"
-DEV_SUPER_ADMIN = {"username": "dev", "email": "dev@email.com", "password": "dev123"}
+DEV_SUPER_ADMIN = {
+    "username": "dev",
+    "name": "Dev Super Admin",
+    "email": "dev@email.com",
+    "password": "dev123",
+}
 REC_PASSWORD = "rec123"
 
 # Clusters determinísticos para validar contexto/fallback
@@ -138,6 +143,18 @@ def _student_fields(username: str) -> dict:
     }
 
 
+def _display_name(username: str, role: UserRole) -> str:
+    prefix = {
+        UserRole.LIBRARIAN: "Bibliotecário",
+        UserRole.TEACHER: "Professor",
+        UserRole.STUDENT: "Aluno",
+        UserRole.SCHOOL_ADMIN: "Admin Escola",
+        UserRole.SUPER_ADMIN: "Super Admin",
+    }[role]
+    suffix = "".join(c for c in username if c.isdigit()) or username
+    return f"{prefix} {suffix}"
+
+
 async def _get_or_create_genre(session: AsyncSession, name: str) -> Genre:
     canonical = display_name_genre(name)
     slug = slugify_genre(canonical)
@@ -207,6 +224,7 @@ async def seed_users_rec(session: AsyncSession, schools: list[School]) -> dict[s
         extra = _student_fields(username) if role == UserRole.STUDENT else {}
         u = User(
             username=username,
+            name=_display_name(username, role),
             email=email,
             password=get_password_hash(REC_PASSWORD),
             role=role,
@@ -543,7 +561,7 @@ async def seed_recommendations(reset: bool = False):
         # super_admin
         super_admin = await session.scalar(select(User).where(User.username == DEV_SUPER_ADMIN["username"]))
         if not super_admin:
-            super_admin = User(username=DEV_SUPER_ADMIN["username"], email=DEV_SUPER_ADMIN["email"], password=get_password_hash(DEV_SUPER_ADMIN["password"]), role=UserRole.SUPER_ADMIN, school_id=None)
+            super_admin = User(username=DEV_SUPER_ADMIN["username"], name=DEV_SUPER_ADMIN["name"], email=DEV_SUPER_ADMIN["email"], password=get_password_hash(DEV_SUPER_ADMIN["password"]), role=UserRole.SUPER_ADMIN, school_id=None)
             session.add(super_admin)
             await session.flush()
             await session.commit()

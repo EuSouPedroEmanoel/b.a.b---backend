@@ -14,6 +14,7 @@ def test_create_user(client, school, super_admin_token):
         headers={'Authorization': f'Bearer {super_admin_token}'},
         json={
             'username': 'alice',
+            'name': 'Alice Biblioteca',
             'email': 'alice@exemple.com',
             'cpf': '11144477735',
             'password': 'S3cr3t!123',
@@ -24,6 +25,7 @@ def test_create_user(client, school, super_admin_token):
 
     assert response.status_code == HTTPStatus.CREATED
     assert response.json()['username'] == 'alice'
+    assert response.json()['name'] == 'Alice Biblioteca'
     assert response.json()['email'] == 'alice@exemple.com'
     assert response.json()['school_id'] == school.id
     assert response.json()['cpf_masked'] == '•••.•••.•••-35'
@@ -202,6 +204,7 @@ def test_update_user(client, user, token):
         headers={'Authorization': f'Bearer {token}'},
         json={
             'username': 'Pedro',
+            'name': 'Pedro Silva',
             'email': 'pedro@email.ai',
             'password': 'secret',
         },
@@ -210,10 +213,43 @@ def test_update_user(client, user, token):
     assert response.status_code == HTTPStatus.OK
     data = response.json()
     assert data['username'] == 'Pedro'
+    assert data['name'] == 'Pedro Silva'
     assert data['email'] == 'pedro@email.ai'
     assert data['id'] == user.id
     assert data['role'] == user.role
     assert data['school_id'] == user.school_id
+
+
+def test_super_admin_updates_school_admin(
+    client, school_admin, super_admin_token
+):
+    response = client.put(
+        f'/users/{school_admin.id}',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={
+            'name': 'Admin Atualizado',
+            'email': 'school-admin-updated@example.com',
+            'password': 'new-secret',
+        },
+    )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['name'] == 'Admin Atualizado'
+    assert response.json()['email'] == 'school-admin-updated@example.com'
+    assert response.json()['role'] == UserRole.SCHOOL_ADMIN
+
+
+def test_super_admin_cannot_update_non_school_admin(
+    client, user, super_admin_token
+):
+    response = client.put(
+        f'/users/{user.id}',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={'email': 'librarian-updated@example.com'},
+    )
+
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert response.json() == {'detail': 'Not enough permissions'}
 
 
 def test_update_integrity_error(
@@ -414,6 +450,7 @@ def test_create_student(client, school, school_admin, school_admin_token):
     assert resp.status_code == HTTPStatus.CREATED
     data = resp.json()
     assert data['role'] == 'student'
+    assert data['name'] == 'João da Silva'
     assert data['cpf_masked'] == '•••.•••.•••-25'
     assert 'cpf' not in data
     assert data['birthdate'] == '2015-05-10'
@@ -439,6 +476,7 @@ def test_create_student_default_password_is_birthdate(
     )
 
     assert resp.status_code == HTTPStatus.CREATED
+    assert resp.json()['name'] == 'Maria'
     username = resp.json()['username']
 
     login = client.post(

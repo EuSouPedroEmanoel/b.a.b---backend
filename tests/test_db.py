@@ -14,6 +14,7 @@ async def test_create_user(session: AsyncSession, mock_db_time):
     with mock_db_time(model=User) as time:
         new_user = User(
             username='test',
+            name='Test User',
             email='test@test',
             password='secret',
             role=UserRole.SUPER_ADMIN,
@@ -29,6 +30,7 @@ async def test_create_user(session: AsyncSession, mock_db_time):
     assert asdict(user) == {
         'id': 1,
         'username': 'test',
+        'name': 'Test User',
         'email': 'test@test',
         'password': 'secret',
         'role': UserRole.SUPER_ADMIN,

@@ -1,11 +1,14 @@
 from http import HTTPStatus
 
 
-def test_root_deve_retornar_ola_mundo(client):
-
+def test_root_deve_retornar_status_publico(client):
     response = client.get('/')
-    assert response.json() == {'message': 'olá mundo'}
     assert response.status_code == HTTPStatus.OK
+    assert response.headers['content-type'] == 'application/json'
+    assert response.json() == {
+        'name': 'Base de Acesso Bibliotecário API',
+        'status': 'online',
+    }
 
 
 def test_rate_limit_handler():

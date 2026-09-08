@@ -123,7 +123,7 @@ def test_loan_create_rejects_invalid_identifier_combinations():
 
 
 @pytest.mark.asyncio
-async def test_super_admin_disambiguates_internal_code_by_school(
+async def test_super_admin_cannot_create_loan_with_internal_code(
     session, client, user, super_admin, super_admin_token, book, other_school
 ):
     code = 'EX-DUPLICADO-01'
@@ -155,7 +155,7 @@ async def test_super_admin_disambiguates_internal_code_by_school(
     await session.commit()
 
     headers = {'Authorization': f'Bearer {super_admin_token}'}
-    missing_school = client.post(
+    response = client.post(
         '/loans/',
         headers=headers,
         json={
@@ -164,25 +164,7 @@ async def test_super_admin_disambiguates_internal_code_by_school(
             'school_id': 99999,
         },
     )
-    assert missing_school.status_code == HTTPStatus.NOT_FOUND
-    ambiguous = client.post(
-        '/loans/',
-        headers=headers,
-        json={'internal_code': code, 'cpf': '39053344705'},
-    )
-    assert ambiguous.status_code == HTTPStatus.CONFLICT
-
-    resolved = client.post(
-        '/loans/',
-        headers=headers,
-        json={
-            'internal_code': code,
-            'cpf': '39053344705',
-            'school_id': other_school.id,
-        },
-    )
-    assert resolved.status_code == HTTPStatus.CREATED
-    assert resolved.json()['school_id'] == other_school.id
+    assert response.status_code == HTTPStatus.FORBIDDEN
 
 
 def test_create_loan_forbidden_for_student(
@@ -848,7 +830,7 @@ async def test_student_cannot_see_other_loans(
 
 
 @pytest.mark.asyncio
-async def test_super_admin_create_loan(
+async def test_super_admin_cannot_create_loan(
     session, client, super_admin, super_admin_token, student, book
 ):
     copy = BookCopyFactory(
@@ -865,11 +847,41 @@ async def test_super_admin_create_loan(
         headers={'Authorization': f'Bearer {super_admin_token}'},
         json={'copy_id': copy.id, 'user_id': student.id},
     )
-    assert resp.status_code == HTTPStatus.CREATED
-    assert resp.json()['school_id'] == student.school_id
+    assert resp.status_code == HTTPStatus.FORBIDDEN
 
 
-def test_super_admin_create_loan_copy_not_found(
+@pytest.mark.asyncio
+async def test_super_admin_cannot_return_loan(
+    session, client, super_admin, super_admin_token, student, book
+):
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=super_admin.id,
+        school_id=student.school_id,
+        state=BooksStates.BORROWED,
+    )
+    session.add(copy)
+    await session.commit()
+    await session.refresh(copy)
+    loan = Loan(
+        copy_id=copy.id,
+        user_id=student.id,
+        school_id=student.school_id,
+        due_date=datetime.now(tz=ZoneInfo('UTC')) + timedelta(days=14),
+    )
+    session.add(loan)
+    await session.commit()
+    await session.refresh(loan)
+
+    response = client.post(
+        f'/loans/{loan.id}/return',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+    )
+
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+def test_super_admin_cannot_create_loan_when_copy_is_not_found(
     client, super_admin_token, student
 ):
     resp = client.post(
@@ -877,7 +889,7 @@ def test_super_admin_create_loan_copy_not_found(
         headers={'Authorization': f'Bearer {super_admin_token}'},
         json={'copy_id': 99999, 'user_id': student.id},
     )
-    assert resp.status_code == HTTPStatus.NOT_FOUND
+    assert resp.status_code == HTTPStatus.FORBIDDEN
 
 
 def test_create_loan_borrower_not_found(client, token, book, session, user):
@@ -1157,7 +1169,7 @@ async def test_return_loan_copy_not_found_mock(
 async def test_list_loans_super_admin_filters(
     session, client, super_admin, super_admin_token, student, book
 ):
-    # create two loans with different students/copies as super_admin
+    # Cria dois empréstimos diretamente para testar a consulta do super admin.
     from src.models import User, UserRole
     from src.security import get_password_hash
 
@@ -1184,18 +1196,21 @@ async def test_list_loans_super_admin_filters(
         await session.commit()
         await session.refresh(c)
         copies.append(c)
-    resp1 = client.post(
-        '/loans/',
-        headers={'Authorization': f'Bearer {super_admin_token}'},
-        json={'copy_id': copies[0].id, 'user_id': student.id},
-    )
-    assert resp1.status_code == HTTPStatus.CREATED
-    resp2 = client.post(
-        '/loans/',
-        headers={'Authorization': f'Bearer {super_admin_token}'},
-        json={'copy_id': copies[1].id, 'user_id': student2.id},
-    )
-    assert resp2.status_code == HTTPStatus.CREATED
+    session.add_all([
+        Loan(
+            copy_id=copies[0].id,
+            user_id=student.id,
+            school_id=student.school_id,
+            due_date=datetime.now(tz=ZoneInfo('UTC')) + timedelta(days=14),
+        ),
+        Loan(
+            copy_id=copies[1].id,
+            user_id=student2.id,
+            school_id=student.school_id,
+            due_date=datetime.now(tz=ZoneInfo('UTC')) + timedelta(days=14),
+        ),
+    ])
+    await session.commit()
     # filter by user_id
     r = client.get(
         f'/loans/?user_id={student.id}',

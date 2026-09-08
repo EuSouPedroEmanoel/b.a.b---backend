@@ -45,6 +45,11 @@ class Message(BaseModel):
     message: str
 
 
+class ApiStatus(BaseModel):
+    name: str
+    status: str
+
+
 # region - Circulation policies
 class CirculationPolicyPublic(BaseModel):
     reader_role: UserRole
@@ -134,12 +139,14 @@ class CirculationPoliciesPublic(BaseModel):
 # region - User
 class UserSchema(BaseModel):
     username: str
+    name: str
     email: EmailStr
     password: str
 
 
 class UserPublic(BaseModel):
     username: str
+    name: str
     email: EmailStr | None = None
     cpf_masked: str | None = None
     birthdate: date | None = None
@@ -222,11 +229,18 @@ class AdministrativeCapabilitiesPublic(BaseModel):
 
 class StaffCreateSchema(BaseModel):
     username: str
+    name: str | None = Field(default=None, min_length=1, max_length=120)
     email: EmailStr | None = None
     cpf: str
     password: str
     role: UserRole = UserRole.LIBRARIAN
     school_id: int | None = None  # only honored for SUPER_ADMIN
+
+    @model_validator(mode='after')
+    def default_name_from_username(self):
+        if self.name is None:
+            self.name = self.username
+        return self
 
     @model_validator(mode='after')
     def validate_cpf_field(self):
@@ -302,9 +316,16 @@ class StudentCreateSchema(BaseModel):
 
 class SchoolAdminCreateSchema(BaseModel):
     username: str
+    name: str | None = Field(default=None, min_length=1, max_length=120)
     email: EmailStr
     cpf: str
     password: str
+
+    @model_validator(mode='after')
+    def default_name_from_username(self):
+        if self.name is None:
+            self.name = self.username
+        return self
 
     @model_validator(mode='after')
     def validate_cpf_field(self):
@@ -316,6 +337,7 @@ class SchoolAdminCreateSchema(BaseModel):
 
 class UserUpdateSelf(BaseModel):
     username: str | None = Field(default=None, min_length=1)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
     email: EmailStr | None = None
     cpf: str | None = None
     birthdate: date | None = None

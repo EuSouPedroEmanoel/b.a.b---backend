@@ -19,7 +19,7 @@ from src.routers import (
     schools,
     users,
 )
-from src.schemas import Message
+from src.schemas import ApiStatus
 from src.security import require_account
 
 app = FastAPI()
@@ -67,6 +67,9 @@ app.include_router(
 )
 
 
-@app.get('/', status_code=HTTPStatus.OK, response_model=Message)
+@app.get('/', status_code=HTTPStatus.OK, response_model=ApiStatus)
 async def read_root():
-    return {'message': 'olá mundo'}
+    return {
+        'name': 'Base de Acesso Bibliotecário API',
+        'status': 'online',
+    }

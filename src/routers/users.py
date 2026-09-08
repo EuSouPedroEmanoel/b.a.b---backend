@@ -169,6 +169,7 @@ async def create_user(
         )
     db_user = User(
         username=user.username,
+        name=user.name or user.username,
         email=user.email,
         cpf_lookup_hash=lookup_hash,
         cpf_collision_guard=collision_guard,
@@ -253,6 +254,7 @@ async def create_student(
     hashed = get_password_hash(payload.password)
     db_user = User(
         username=username,
+        name=payload.name,
         email=None,
         cpf_lookup_hash=lookup_hash,
         cpf_collision_guard=collision_guard,
@@ -356,6 +358,8 @@ async def _apply_updates(
 ) -> None:
     if 'username' in data and is_self:
         target.username = data['username']
+    if 'name' in data and data['name'] is not None:
+        target.name = data['name']
     if 'email' in data:
         target.email = data['email']
     if 'cpf' in data:
@@ -408,7 +412,10 @@ async def update_user(
         current_user.role in {UserRole.LIBRARIAN, UserRole.SCHOOL_ADMIN}
         and target.school_id == current_user.school_id
         and target.role == UserRole.STUDENT
-    ) or current_user.role == UserRole.SUPER_ADMIN
+    ) or (
+        current_user.role == UserRole.SUPER_ADMIN
+        and target.role == UserRole.SCHOOL_ADMIN
+    )
     if not (is_self or staff_can_edit):
         raise HTTPException(
             status_code=HTTPStatus.FORBIDDEN, detail='Not enough permissions'

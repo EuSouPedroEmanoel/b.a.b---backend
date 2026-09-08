@@ -344,14 +344,16 @@ async def cancel_reservation(
             status_code=HTTPStatus.NOT_FOUND, detail='Reservation not found'
         )
 
-    # only owner or staff of same school or super admin
-    is_owner = reservation.user_id == current_user.id
+    # Only the owner or staff of the same school can cancel a reservation.
+    is_owner = (
+        current_user.role != UserRole.SUPER_ADMIN
+        and reservation.user_id == current_user.id
+    )
     is_staff_same_school = (
         current_user.role in {UserRole.LIBRARIAN, UserRole.SCHOOL_ADMIN}
         and reservation.school_id == current_user.school_id
     )
-    is_super = current_user.role == UserRole.SUPER_ADMIN
-    if not (is_owner or is_staff_same_school or is_super):
+    if not (is_owner or is_staff_same_school):
         raise HTTPException(
             status_code=HTTPStatus.FORBIDDEN, detail='Not enough permissions'
         )
