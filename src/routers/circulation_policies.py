@@ -5,7 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.circulation import policy_public, resolve_school_policies
+from src.circulation import (
+    DEFAULT_POLICIES,
+    policy_public,
+    resolve_school_policies,
+)
 from src.database import get_session
 from src.models import (
     AdministrativeCapability,
@@ -77,7 +81,14 @@ async def get_circulation_policies(
             detail='Você não pode consultar regras desta escola.',
         )
     policies = await resolve_school_policies(session, school_id)
-    return {'policies': [policy_public(policy) for policy in policies]}
+    defaults = [
+        DEFAULT_POLICIES[role]
+        for role in (UserRole.STUDENT, UserRole.TEACHER)
+    ]
+    return {
+        'policies': [policy_public(policy) for policy in policies],
+        'defaults': [policy_public(policy) for policy in defaults],
+    }
 
 
 @router.put('/{school_id}', response_model=CirculationPoliciesPublic)
@@ -113,4 +124,11 @@ async def update_circulation_policies(
 
     await session.commit()
     policies = await resolve_school_policies(session, school_id)
-    return {'policies': [policy_public(policy) for policy in policies]}
+    defaults = [
+        DEFAULT_POLICIES[role]
+        for role in (UserRole.STUDENT, UserRole.TEACHER)
+    ]
+    return {
+        'policies': [policy_public(policy) for policy in policies],
+        'defaults': [policy_public(policy) for policy in defaults],
+    }

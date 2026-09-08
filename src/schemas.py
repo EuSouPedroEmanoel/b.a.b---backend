@@ -131,6 +131,7 @@ class CirculationPoliciesUpdate(BaseModel):
 
 class CirculationPoliciesPublic(BaseModel):
     policies: list[CirculationPolicyPublic]
+    defaults: list[CirculationPolicyPublic]
 
 
 # endregion
