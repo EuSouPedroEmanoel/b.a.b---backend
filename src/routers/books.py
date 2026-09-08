@@ -1,4 +1,5 @@
 import re
+import random
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from typing import Annotated
@@ -48,7 +49,501 @@ from src.utils.pagination import paginate
 
 ISBN_MIN_LENGTH = 10
 
+LOAN_AFFINITY_WEIGHT = 2.0
+COMPLETED_LOAN_BONUS = 1.25
+RESERVATION_AFFINITY_WEIGHT = 1.0
+
+
+def _recency_factor(interaction_at: datetime, now: datetime) -> float:
+    """Return the temporal multiplier used by user-affinity signals."""
+    if interaction_at.tzinfo is None:
+        interaction_at = interaction_at.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (now - interaction_at).total_seconds() / 86400)
+    if age_days <= 30:
+        return 1.5
+    if age_days <= 90:
+        return 1.25
+    if age_days <= 180:
+        return 1.0
+    return 0.7
+
+
+def _interaction_affinity_score(
+    kind: str,
+    interaction_at: datetime,
+    now: datetime,
+    status: LoanStatus | None = None,
+) -> float:
+    weight = LOAN_AFFINITY_WEIGHT if kind == 'loan' else RESERVATION_AFFINITY_WEIGHT
+    if kind == 'loan' and status == LoanStatus.RETURNED:
+        weight *= COMPLETED_LOAN_BONUS
+    return weight * _recency_factor(interaction_at, now)
+
+
 router = APIRouter(tags=['books'], prefix='/books')
+
+
+@router.get('/home', response_model=dict)
+async def get_student_home(
+    session: Session,
+    user: CurrentUser,
+    limit: Annotated[int, Query(ge=1, le=50)] = 16,
+    genre_limit: Annotated[int, Query(ge=1, le=20)] = 12,
+):
+    """Return the independent discovery feeds used by the student home."""
+    if is_guest(user):
+        guest_scope = exists().where(
+            (BookCopy.book_id == Book.id) & (BookCopy.school_id == user.school_id)
+        )
+        guest_books = list((await session.scalars(
+            select(Book).options(selectinload(Book.genres), selectinload(Book.authors))
+            .where(
+                Book.is_active.is_(True),
+                guest_scope,
+            )
+            .order_by(Book.created_at.desc()).limit(200)
+        )).all())
+        ids = [book.id for book in guest_books]
+        states = await _derived_states(session, ids, user.school_id)
+        total_map, available_map = await _copies_counts(session, ids, user.school_id)
+        payload = [
+            {
+                **_guest_book_public(book),
+                'derived_state': state,
+                'total_copies': total_map.get(book.id, 0),
+                'available_copies': available_map.get(book.id, 0),
+            }
+            for book, state in zip(guest_books, states)
+        ]
+        payload.sort(key=lambda book: book.get('available_copies', 0) > 0, reverse=True)
+        by_id = {book['id']: book for book in payload}
+        public_carousels = []
+        shown: set[int] = set()
+
+        def add_public(title: str, ids: list[int], ranking: bool = False) -> None:
+            if len(public_carousels) >= 6:
+                return
+            books = [by_id[book_id] for book_id in ids if book_id in by_id and book_id not in shown]
+            if len(books) < 10:
+                books = [by_id[book_id] for book_id in ids if book_id in by_id]
+            books = list({book['id']: book for book in books}.values())[:20]
+            if len(books) < 10:
+                return
+            shown.update(book['id'] for book in books)
+            public_carousels.append({'title': title, 'books': books, 'ranking': ranking})
+
+        all_ids = [book['id'] for book in payload]
+        popular_ids = (await session.scalars(
+            select(BookCopy.book_id)
+            .join(Loan, Loan.copy_id == BookCopy.id)
+            .where(
+                Loan.status == LoanStatus.RETURNED,
+                BookCopy.school_id == user.school_id,
+            )
+            .group_by(BookCopy.book_id)
+            .order_by(func.count(Loan.id).desc())
+            .limit(50)
+        )).all()
+        # Each feed is deliberately capped and deduplicated so later feeds can
+        # still offer genuinely new discovery opportunities.
+        add_public('Mais populares', list(popular_ids) + all_ids)
+        newest_ids = [book.id for book in guest_books]
+        add_public('Novidades da biblioteca', newest_ids)
+        quarter_ids = (await session.scalars(
+            select(BookCopy.book_id).join(Loan, Loan.copy_id == BookCopy.id)
+            .where(
+                Loan.status == LoanStatus.RETURNED,
+                Loan.borrowed_at >= datetime.now(timezone.utc) - timedelta(days=90),
+                BookCopy.school_id == user.school_id,
+            )
+            .group_by(BookCopy.book_id).order_by(func.count(Loan.id).desc()).limit(20)
+        )).all()
+        # O ranking trimestral é obrigatório na vitrine pública. Quando o
+        # período ainda não tem dez títulos distintos, completamos com a
+        # popularidade geral elegível sem deixar a seção desaparecer.
+        add_public('Mais lidos no trimestre', list(quarter_ids) + list(popular_ids) + all_ids, ranking=True)
+        random_ids = list(all_ids)
+        random.shuffle(random_ids)
+        add_public('Você pode gostar', random_ids)
+        genre_rows = await session.execute(
+            select(Genre.id, Genre.name).join(
+                book_genres, book_genres.c.genre_id == Genre.id
+            ).join(Book, Book.id == book_genres.c.book_id).join(
+                BookCopy, BookCopy.book_id == Book.id
+            ).outerjoin(
+                Loan,
+                (Loan.copy_id == BookCopy.id)
+                & (Loan.status == LoanStatus.RETURNED),
+            )
+            .where(
+                BookCopy.school_id == user.school_id,
+                Book.is_active.is_(True),
+            ).group_by(Genre.id, Genre.name)
+            .order_by(func.count(Loan.id).desc(), func.count(Book.id).desc())
+            .limit(6)
+        )
+        trending_genres = genre_rows.all()
+        eligible_genres = [
+            row for row in trending_genres
+            if sum(
+                any(genre.get('id') == row[0] for genre in book.get('genres', []))
+                for book in payload
+            ) >= 10
+        ]
+        selected_genres = random.sample(
+            eligible_genres, k=min(2, len(eligible_genres))
+        )
+        for genre_id, genre_name in selected_genres:
+            genre_ids = (await session.scalars(
+                select(Book.id).join(book_genres, book_genres.c.book_id == Book.id)
+                .where(
+                    book_genres.c.genre_id == genre_id,
+                    Book.is_active.is_(True),
+                    guest_scope,
+                )
+                .order_by(Book.created_at.desc()).limit(20)
+            )).all()
+            add_public(f'Populares em {genre_name}', genre_ids)
+        ranking_section = next(
+            (section for section in public_carousels if section.get('ranking')),
+            None,
+        )
+        if ranking_section is not None:
+            public_carousels.remove(ranking_section)
+            public_carousels.insert(min(4, len(public_carousels)), ranking_section)
+        return {
+            'recommendedBooks': payload[:limit],
+            'newBooks': payload[:limit],
+            'genreSections': [],
+            'genrePreferences': [],
+            'carousels': [
+                {'type': f'public-{index}', **section}
+                for index, section in enumerate(public_carousels)
+            ],
+        }
+    if user.school_id is None:
+        raise HTTPException(status_code=HTTPStatus.FORBIDDEN, detail='Student access required')
+    latest_book_id = await session.scalar(
+        select(BookCopy.book_id)
+        .join(Loan, Loan.copy_id == BookCopy.id)
+        .where(Loan.user_id == user.id)
+        .order_by(Loan.borrowed_at.desc())
+        .limit(1)
+    )
+    recommended = await get_recommendations(latest_book_id, session, user, limit) if latest_book_id else []
+    visible = (
+        ~false()
+        if user.role == UserRole.SUPER_ADMIN
+        else exists().where(
+            (BookCopy.book_id == Book.id) & (BookCopy.school_id == user.school_id)
+        ) | ~exists().where(BookCopy.book_id == Book.id)
+    )
+    new_books = list((await session.scalars(
+        select(Book).options(selectinload(Book.genres), selectinload(Book.authors))
+        .where(Book.is_active.is_(True), visible)
+        .order_by(Book.created_at.desc()).limit(limit)
+    )).all())
+
+    async def serialize_home_books(books: list[Book]) -> list[dict]:
+        if not books:
+            return []
+        ids = [book.id for book in books]
+        states = await _derived_states(session, ids, user.school_id)
+        total_map, available_map = await _copies_counts(
+            session, ids, user.school_id
+        )
+        return [
+            {
+                **_book_public(book),
+                'derived_state': state,
+                'total_copies': total_map.get(book.id, 0),
+                'available_copies': available_map.get(book.id, 0),
+            }
+            for book, state in zip(books, states)
+        ]
+
+    new_books = await serialize_home_books(new_books)
+    new_books.sort(key=lambda book: book.get('available_copies', 0) > 0, reverse=True)
+    if not recommended:
+        recommended = new_books[:limit]
+
+    loan_ids = (await session.scalars(
+        select(BookCopy.book_id).join(Loan, Loan.copy_id == BookCopy.id).where(Loan.user_id == user.id)
+    )).all()
+    reservation_ids = (await session.scalars(
+        select(Reservation.book_id).where(Reservation.user_id == user.id)
+    )).all()
+    history_book_ids = set(loan_ids) | set(reservation_ids)
+    from src.services.preference_profile import calculate_genre_preferences
+    profile_rows = await session.execute(
+        select(Genre.name, Loan.borrowed_at, Loan.status)
+        .join(book_genres, book_genres.c.genre_id == Genre.id)
+        .join(BookCopy, BookCopy.book_id == book_genres.c.book_id)
+        .join(Loan, Loan.copy_id == BookCopy.id)
+        .where(Loan.user_id == user.id)
+    )
+    preferences = calculate_genre_preferences(
+        [(name, 'loan', occurred, status) for name, occurred, status in profile_rows.all()],
+        datetime.now(timezone.utc),
+    )
+    genre_rows = await session.execute(
+        select(Genre.id, Genre.name, func.count(book_genres.c.book_id).label('score'))
+        .join(book_genres, book_genres.c.genre_id == Genre.id)
+        .where(book_genres.c.book_id.in_(history_book_ids or [-1]))
+        .group_by(Genre.id, Genre.name)
+        .order_by(func.count(book_genres.c.book_id).desc())
+        .limit(3)
+    )
+    genre_sections = []
+    for genre_id, genre_name, _ in genre_rows.all():
+        books = list((await session.scalars(
+            select(Book).options(selectinload(Book.genres), selectinload(Book.authors))
+            .where(Book.is_active.is_(True), visible, Book.genres.any(Genre.id == genre_id))
+            .order_by(Book.created_at.desc()).limit(genre_limit)
+        )).all())
+        if len(books) < 6:
+            related_author_ids = (await session.scalars(
+                select(book_authors.c.author_id)
+                .join(book_genres, book_genres.c.book_id == book_authors.c.book_id)
+                .where(book_genres.c.genre_id == genre_id)
+            )).all()
+            if related_author_ids:
+                related_books = (await session.scalars(
+                    select(Book)
+                    .options(selectinload(Book.genres), selectinload(Book.authors))
+                    .where(
+                        Book.is_active.is_(True),
+                        visible,
+                        Book.authors.any(Author.id.in_(related_author_ids)),
+                        Book.id.notin_([book.id for book in books] or [-1]),
+                    )
+                    .order_by(Book.created_at.desc())
+                    .limit(genre_limit - len(books))
+                )).all()
+                books.extend(related_books)
+        genre_sections.append(
+            {'name': genre_name, 'books': sorted(await serialize_home_books(books), key=lambda book: book.get('available_copies', 0) > 0, reverse=True)}
+        )
+
+    # Dynamic home composition: sections are only published with enough useful
+    # books and favour unseen items across the page.
+    carousels: list[dict] = []
+    shown_book_ids: set[int] = set()
+
+    def add_carousel(kind: str, title: str, books: list[dict], minimum: int = 10, ranking: bool = False) -> None:
+        if not ranking:
+            books = sorted(books, key=lambda book: book.get('available_copies', 0) > 0, reverse=True)
+        if len(carousels) >= 8:
+            return
+        unique = [book for book in books if book['id'] not in shown_book_ids]
+        if len(unique) >= 10:
+            selected = unique
+        else:
+            # Preserve every unseen alternative first, then reuse only the
+            # least avoidable items when a valid section needs completion.
+            selected = unique + [
+                book for book in books if book['id'] in shown_book_ids
+            ]
+        deduped = list({book['id']: book for book in selected}.values())[:20]
+        if len(deduped) < minimum:
+            return
+        shown_book_ids.update(book['id'] for book in deduped)
+        carousels.append({'type': kind, 'title': title, 'books': deduped, 'ranking': ranking})
+
+    # Priority 1: the personalized feed is always presented first.
+    add_carousel('recommended', 'Recomendados para você', recommended)
+
+    # Priority 2: personal reading history, when it exists.
+    recent_rows = await session.execute(
+        select(BookCopy.book_id, func.max(Loan.returned_at).label('last_read'))
+        .join(Loan, Loan.copy_id == BookCopy.id)
+        .where(Loan.user_id == user.id, Loan.status == LoanStatus.RETURNED)
+        .group_by(BookCopy.book_id)
+        .order_by(func.max(Loan.returned_at).desc())
+        .limit(limit)
+    )
+    recent_ids = [book_id for book_id, _ in recent_rows.all()]
+    if recent_ids:
+        recent_map = {book['id']: book for book in await serialize_home_books(list((await session.scalars(
+            select(Book).options(selectinload(Book.genres), selectinload(Book.authors)).where(Book.id.in_(recent_ids))
+        )).all()))}
+        add_carousel('recently-read', 'Lidos recentemente', [recent_map[book_id] for book_id in recent_ids if book_id in recent_map], minimum=1)
+
+        # A contextual continuation of the most recent completed reading.
+        source_book = recent_ids[0]
+        related_books = await get_recommendations(source_book, session, user, limit)
+        related_books = [
+            book for book in related_books
+            if book['id'] not in history_book_ids
+        ]
+        source = recent_map.get(source_book)
+        if source:
+            add_carousel(
+                'because-you-read',
+                f"Já que você leu {source['title']}",
+                related_books,
+            )
+
+    # Priority 3: discovery from the student's preference profile.
+    for section in genre_sections:
+        add_carousel('because-you-like', f"Porque você gosta de {section['name']}", section['books'])
+        genre_id = next(
+            (genre.id for genre in (await session.scalars(
+                select(Genre).where(Genre.name == section['name'])
+            )).all()),
+            None,
+        )
+        if genre_id is not None:
+            popular_genre_ids = (await session.scalars(
+                select(BookCopy.book_id)
+                .join(Loan, Loan.copy_id == BookCopy.id)
+                .join(book_genres, book_genres.c.book_id == BookCopy.book_id)
+                .where(
+                    book_genres.c.genre_id == genre_id,
+                    Loan.status == LoanStatus.RETURNED,
+                    Loan.borrowed_at >= datetime.now(timezone.utc) - timedelta(days=90),
+                )
+                .group_by(BookCopy.book_id)
+                .order_by(func.count(Loan.id).desc())
+                .limit(genre_limit)
+            )).all()
+            if popular_genre_ids:
+                popular_genre_books = await serialize_home_books(list((await session.scalars(
+                    select(Book).options(selectinload(Book.genres), selectinload(Book.authors))
+                    .where(
+                        Book.id.in_(popular_genre_ids),
+                        Book.is_active.is_(True),
+                        visible,
+                    )
+                )).all()))
+                popular_map = {book['id']: book for book in popular_genre_books}
+                add_carousel(
+                    'popular-in-genre',
+                    f"Populares em {section['name']}",
+                    [popular_map[book_id] for book_id in popular_genre_ids if book_id in popular_map],
+                )
+            else:
+                # Keep the contextual section available even when the period
+                # has no enough loan activity to form a ranking.
+                add_carousel(
+                    'popular-in-genre',
+                    f"Populares em {section['name']}",
+                    section['books'],
+                )
+        if len(carousels) >= 8:
+            break
+
+    # New students have no personal genres yet: seed one profile-like pair
+    # from the school's most popular genre when enough books are available.
+    if not genre_sections and len(carousels) < 8:
+        fallback_genre = await session.execute(
+            select(Genre.id, Genre.name)
+            .join(book_genres, book_genres.c.genre_id == Genre.id)
+            .join(BookCopy, BookCopy.book_id == book_genres.c.book_id)
+            .join(Loan, Loan.copy_id == BookCopy.id)
+            .where(Loan.status == LoanStatus.RETURNED)
+            .group_by(Genre.id, Genre.name)
+            .order_by(func.count(Loan.id).desc())
+            .limit(1)
+        )
+        fallback_genre_row = fallback_genre.first()
+        if fallback_genre_row:
+            genre_id, genre_name = fallback_genre_row
+            fallback_books = list((await session.scalars(
+                select(Book).options(selectinload(Book.genres), selectinload(Book.authors))
+                .where(
+                    Book.is_active.is_(True), visible,
+                    Book.genres.any(Genre.id == genre_id),
+                )
+                .order_by(Book.created_at.desc()).limit(genre_limit)
+            )).all())
+            fallback_payload = await serialize_home_books(fallback_books)
+            add_carousel('because-you-like', f'Porque você gosta de {genre_name}', fallback_payload)
+            add_carousel('popular-in-genre', f'Populares em {genre_name}', fallback_payload)
+
+    # Priority 4: the mandatory school ranking, based on completed loans in
+    # the last semester. It remains visible even with a small sample.
+    popular_ids = (await session.scalars(
+        select(BookCopy.book_id)
+        .join(Loan, Loan.copy_id == BookCopy.id)
+        .where(
+            Loan.status == LoanStatus.RETURNED,
+            Loan.borrowed_at >= datetime.now(timezone.utc) - timedelta(days=180),
+            BookCopy.school_id == user.school_id,
+        )
+        .group_by(BookCopy.book_id)
+        .order_by(func.count(Loan.id).desc())
+        .limit(limit)
+    )).all()
+    ranking_title = 'Mais lidos no semestre'
+    ranking_kind = 'popular-semester'
+    if len(popular_ids) < 10:
+        ranking_title = 'Mais lidos no ano'
+        ranking_kind = 'popular-year'
+        popular_ids = (await session.scalars(
+            select(BookCopy.book_id)
+            .join(Loan, Loan.copy_id == BookCopy.id)
+            .where(
+                Loan.status == LoanStatus.RETURNED,
+                Loan.borrowed_at >= datetime.now(timezone.utc) - timedelta(days=365),
+                BookCopy.school_id == user.school_id,
+            )
+            .group_by(BookCopy.book_id)
+            .order_by(func.count(Loan.id).desc())
+            .limit(limit)
+        )).all()
+    if popular_ids:
+        popular_books = await serialize_home_books(list((await session.scalars(
+            select(Book).options(selectinload(Book.genres), selectinload(Book.authors))
+            .where(Book.id.in_(popular_ids), Book.is_active.is_(True), visible)
+        )).all()))
+        popular_map = {book['id']: book for book in popular_books}
+        add_carousel(
+            ranking_kind,
+            ranking_title,
+            [popular_map[book_id] for book_id in popular_ids if book_id in popular_map],
+            minimum=1,
+            ranking=True,
+        )
+    elif new_books:
+        add_carousel(ranking_kind, ranking_title, new_books, minimum=1, ranking=True)
+
+    # Priority 5: general catalog discovery.
+    if not history_book_ids:
+        popular_genres = await session.execute(
+            select(Genre.id, Genre.name, func.count(Loan.id).label('loan_count'))
+            .join(book_genres, book_genres.c.genre_id == Genre.id)
+            .join(BookCopy, BookCopy.book_id == book_genres.c.book_id)
+            .join(Loan, Loan.copy_id == BookCopy.id)
+            .where(Loan.status == LoanStatus.RETURNED)
+            .group_by(Genre.id, Genre.name)
+            .order_by(func.count(Loan.id).desc())
+            .limit(2)
+        )
+        for genre_id, genre_name, _ in popular_genres.all():
+            genre_books = list((await session.scalars(
+                select(Book).options(selectinload(Book.genres), selectinload(Book.authors))
+                .where(
+                    Book.is_active.is_(True),
+                    visible,
+                    Book.genres.any(Genre.id == genre_id),
+                )
+                .order_by(Book.created_at.desc())
+                .limit(genre_limit)
+            )).all())
+            add_carousel(
+                'popular-genre',
+                f'Populares em {genre_name}',
+                await serialize_home_books(genre_books),
+            )
+
+    add_carousel('new', 'Novidades da biblioteca', new_books)
+    add_carousel('discovery', 'Livros para descobrir', new_books)
+    ranking_section = next((section for section in carousels if section.get('ranking')), None)
+    if ranking_section is not None:
+        carousels.remove(ranking_section)
+        carousels.insert(min(4, len(carousels)), ranking_section)
+    return {'recommendedBooks': recommended, 'newBooks': new_books, 'genreSections': genre_sections, 'genrePreferences': preferences, 'carousels': carousels}
 
 
 async def _get_or_create_genre_by_name(  # pragma: no cover
@@ -1234,17 +1729,24 @@ async def get_recommendations(  # pragma: no cover
     # --- 1) Afinidade pessoal + histórico (~50%) ---
     try:
         # user's loan history -> book_ids
-        user_book_ids_rows = await session.scalars(
-            select(BookCopy.book_id)
+        now = datetime.now(timezone.utc)
+        loan_history_rows = await session.execute(
+            select(BookCopy.book_id, Loan.borrowed_at, Loan.status)
             .join(Loan, Loan.copy_id == BookCopy.id)
             .where(Loan.user_id == user.id)
         )
-        user_book_ids = set(user_book_ids_rows.all())
+        loan_history = loan_history_rows.all()
+        user_book_ids = {row[0] for row in loan_history}
+        interaction_scores = {}
+        for hist_book_id, interacted_at, status in loan_history:
+            interaction_scores[hist_book_id] = interaction_scores.get(hist_book_id, 0) + _interaction_affinity_score('loan', interacted_at, now, status)
         # also include reservations history
-        res_rows = await session.scalars(
-            select(Reservation.book_id).where(Reservation.user_id == user.id)
+        res_rows = await session.execute(
+            select(Reservation.book_id, Reservation.created_at).where(Reservation.user_id == user.id)
         )
-        user_book_ids.update(res_rows.all())
+        for hist_book_id, interacted_at in res_rows.all():
+            user_book_ids.add(hist_book_id)
+            interaction_scores[hist_book_id] = interaction_scores.get(hist_book_id, 0) + _interaction_affinity_score('reservation', interacted_at, now)
 
         if user_book_ids:
             # profile genres/authors from history
@@ -1254,12 +1756,36 @@ async def get_recommendations(  # pragma: no cover
                 )
             )
             profile_genre_ids = set(profile_genre_rows.all())
+            genre_scores = {genre_id: sum(
+                interaction_scores.get(hist_book_id, 0)
+                for hist_book_id, candidate_genre_id in (
+                    await session.execute(
+                        select(book_genres.c.book_id, book_genres.c.genre_id).where(
+                            book_genres.c.genre_id == genre_id,
+                            book_genres.c.book_id.in_(list(interaction_scores)),
+                        )
+                    )
+                ).all()
+                if candidate_genre_id == genre_id
+            ) for genre_id in profile_genre_ids}
             profile_author_rows = await session.scalars(
                 select(book_authors.c.author_id).where(
                     book_authors.c.book_id.in_(list(user_book_ids))
                 )
             )
             profile_author_ids = set(profile_author_rows.all())
+            author_scores = {author_id: sum(
+                interaction_scores.get(hist_book_id, 0)
+                for hist_book_id, candidate_author_id in (
+                    await session.execute(
+                        select(book_authors.c.book_id, book_authors.c.author_id).where(
+                            book_authors.c.author_id == author_id,
+                            book_authors.c.book_id.in_(list(interaction_scores)),
+                        )
+                    )
+                ).all()
+                if candidate_author_id == author_id
+            ) for author_id in profile_author_ids}
 
             if profile_genre_ids or profile_author_ids:
                 # find similar users (who borrowed books sharing profile genres/authors)
@@ -1350,7 +1876,17 @@ async def get_recommendations(  # pragma: no cover
                         q = select(Book).options(selectinload(Book.genres), selectinload(Book.authors)).where(Book.id != book_id, Book.is_active.is_(True))
                         q = _visible_filter(q)
                         q = q.where(sa_or(*conds)).order_by(Book.created_at.desc()).limit(needed * 2)
-                        cand_books = (await session.scalars(q)).all()
+                        cand_books = list((await session.scalars(q)).all())
+                        cand_books.sort(
+                            key=lambda candidate: sum(
+                                genre_scores.get(genre.id, 0)
+                                for genre in candidate.genres
+                            ) + sum(
+                                author_scores.get(author.id, 0)
+                                for author in candidate.authors
+                            ),
+                            reverse=True,
+                        )
                         for b in cand_books:
                             if b.id not in seen:
                                 ordered_ids.append(b.id)
