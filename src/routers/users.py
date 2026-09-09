@@ -16,6 +16,7 @@ from src.models import (
 from src.schemas import (
     AdministrativeCapabilitiesPublic,
     AdministrativeCapabilitiesUpdate,
+    CurrentUserPublic,
     FilterUser,
     Message,
     PaginatedResponse,
@@ -53,6 +54,7 @@ StaffOnly = Annotated[
         ])
     ),
 ]
+UserReaders = StaffOnly
 
 
 async def _cpf_conflicts(
@@ -284,7 +286,7 @@ async def create_student(
     response_model=PaginatedResponse[UserPublic],
 )
 async def read_users(
-    current_user: CurrentUser,
+    current_user: UserReaders,
     session: Session,
     filter_users: Annotated[FilterUser, Depends()],
 ):
@@ -325,9 +327,14 @@ async def read_users(
     }
 
 
+@router.get('/me', status_code=HTTPStatus.OK, response_model=CurrentUserPublic)
+async def read_current_user(current_user: CurrentUser):
+    return current_user
+
+
 @router.get('/{user_id}', status_code=HTTPStatus.OK, response_model=UserPublic)
 async def read_user_by_id(
-    user_id: int, session: Session, current_user: CurrentUser
+    user_id: int, session: Session, current_user: UserReaders
 ):
     sttm = select(User).where(User.id == user_id)
     user_db = await session.scalar(sttm)

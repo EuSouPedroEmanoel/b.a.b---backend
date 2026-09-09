@@ -159,6 +159,75 @@ def test_read_user_by_id(client, user, token):
     )
 
 
+def test_read_users_is_forbidden_for_student_and_teacher(
+    client, student, student_token, teacher, teacher_token
+):
+    for access_token in (student_token, teacher_token):
+        response = client.get(
+            '/users/', headers={'Authorization': f'Bearer {access_token}'}
+        )
+        assert response.status_code == HTTPStatus.FORBIDDEN
+        assert response.json() == {'detail': 'Not enough permissions'}
+
+
+def test_read_user_by_id_is_forbidden_for_student_and_teacher(
+    client, student, student_token, teacher, teacher_token
+):
+    for user_id, access_token in (
+        (student.id, student_token),
+        (teacher.id, teacher_token),
+    ):
+        response = client.get(
+            f'/users/{user_id}',
+            headers={'Authorization': f'Bearer {access_token}'},
+        )
+        assert response.status_code == HTTPStatus.FORBIDDEN
+        assert response.json() == {'detail': 'Not enough permissions'}
+
+
+def test_read_current_user_uses_authenticated_identity(
+    client, student, student_token, teacher
+):
+    response = client.get(
+        f'/users/me?user_id={teacher.id}',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+
+    assert response.status_code == HTTPStatus.OK
+    data = response.json()
+    assert data['id'] == student.id
+    assert data['username'] == student.username
+    assert 'cpf_masked' not in data
+    assert 'birthdate' not in data
+    assert 'turma_numero' not in data
+    assert 'turma_letra' not in data
+
+
+def test_read_current_user_rejects_invalid_and_missing_tokens(client):
+    invalid = client.get(
+        '/users/me', headers={'Authorization': 'Bearer invalid.token'}
+    )
+    missing = client.get('/users/me')
+
+    assert invalid.status_code == HTTPStatus.UNAUTHORIZED
+    assert invalid.json() == {'detail': 'Could not validate credentials'}
+    assert missing.status_code == HTTPStatus.UNAUTHORIZED
+    assert missing.json() == {'detail': 'Not authenticated'}
+
+
+def test_read_current_user_rejects_inactive_account(client, user, token):
+    deactivation = client.delete(
+        f'/users/{user.id}', headers={'Authorization': f'Bearer {token}'}
+    )
+    response = client.get(
+        '/users/me', headers={'Authorization': f'Bearer {token}'}
+    )
+
+    assert deactivation.status_code == HTTPStatus.OK
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert response.json() == {'detail': 'User is inactive'}
+
+
 @pytest.mark.asyncio
 async def test_read_users_filters_by_cpf_and_includes_inactive_user(
     session, client, school, token
@@ -422,6 +491,72 @@ def test_read_user_by_id_cross_school_not_found(
         f'/users/{other_user.id}', headers={'Authorization': f'Bearer {token}'}
     )
     assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+def test_school_admin_reads_user_from_own_school(
+    client, user, school_admin_token
+):
+    response = client.get(
+        f'/users/{user.id}',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+    )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['id'] == user.id
+
+
+def test_school_admin_cannot_read_user_from_another_school(
+    client, other_school, school_admin_token, super_admin_token
+):
+    created = client.post(
+        '/users/',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={
+            'username': 'other_school_reader',
+            'name': 'Leitor de outra escola',
+            'email': 'other-school-reader@example.com',
+            'cpf': '52998224725',
+            'password': 'S3cr3t!123',
+            'role': 'librarian',
+            'school_id': other_school.id,
+        },
+    )
+    assert created.status_code == HTTPStatus.CREATED
+
+    response = client.get(
+        f"/users/{created.json()['id']}",
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+    )
+
+    assert response.status_code == HTTPStatus.NOT_FOUND
+    assert response.json() == {'detail': 'User Not Found...'}
+
+
+def test_super_admin_reads_user_from_another_school(
+    client, other_school, super_admin_token
+):
+    created = client.post(
+        '/users/',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={
+            'username': 'super_admin_cross_school_target',
+            'name': 'Leitor entre escolas',
+            'email': 'super-admin-cross-school@example.com',
+            'cpf': '11144477735',
+            'password': 'S3cr3t!123',
+            'role': 'librarian',
+            'school_id': other_school.id,
+        },
+    )
+    assert created.status_code == HTTPStatus.CREATED
+
+    response = client.get(
+        f"/users/{created.json()['id']}",
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+    )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['school_id'] == other_school.id
 
 
 def test_create_book_empty_title(client, token):

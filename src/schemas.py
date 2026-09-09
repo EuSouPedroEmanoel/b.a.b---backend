@@ -166,6 +166,23 @@ class UserPublic(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CurrentUserPublic(BaseModel):
+    """Dados necessários para hidratar a sessão da conta autenticada."""
+
+    id: int
+    username: str
+    name: str
+    email: EmailStr | None = None
+    role: UserRole
+    school_id: int | None = None
+    school_name: str | None = None
+    school_code: str | None = None
+    is_active: bool
+    administrative_capabilities: list[AdministrativeCapability] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class UserDB(UserSchema):
     id: int
 

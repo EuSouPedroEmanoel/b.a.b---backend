@@ -214,7 +214,7 @@ async def logout(
             settings.SECRET_KEY,
             algorithms=[settings.ALGORITHM],
         )
-    except DecodeError, ExpiredSignatureError:
+    except (DecodeError, ExpiredSignatureError):
         raise HTTPException(
             status_code=HTTPStatus.UNAUTHORIZED, detail='Invalid refresh token'
         )
