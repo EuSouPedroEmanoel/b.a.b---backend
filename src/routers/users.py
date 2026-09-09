@@ -313,6 +313,7 @@ async def read_users(
         sttm = sttm.where(
             User.cpf_lookup_hash == cpf_lookup_digest(filter_users.cpf),
             User.cpf_collision_guard == cpf_collision_guard(filter_users.cpf),
+            User.is_active.is_(True),
         )
 
     items, total, page, size, pages = await paginate(

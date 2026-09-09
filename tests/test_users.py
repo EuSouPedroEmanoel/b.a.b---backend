@@ -229,7 +229,7 @@ def test_read_current_user_rejects_inactive_account(client, user, token):
 
 
 @pytest.mark.asyncio
-async def test_read_users_filters_by_cpf_and_includes_inactive_user(
+async def test_read_users_filters_by_cpf_excludes_inactive_user(
     session, client, school, token
 ):
     inactive = User(
@@ -252,9 +252,37 @@ async def test_read_users_filters_by_cpf_and_includes_inactive_user(
     )
 
     assert response.status_code == HTTPStatus.OK
+    assert response.json()['total'] == 0
+    assert response.json()['items'] == []
+
+
+@pytest.mark.asyncio
+async def test_read_users_filters_by_cpf_returns_active_user(
+    session, client, school, token
+):
+    active = User(
+        username='active_lookup',
+        email='active_lookup@example.com',
+        cpf_lookup_hash=cpf_storage_values('39053344705')[0],
+        cpf_collision_guard=cpf_storage_values('39053344705')[1],
+        cpf_last2='05',
+        password=get_password_hash('secret'),
+        role=UserRole.STUDENT,
+        school_id=school.id,
+        is_active=True,
+    )
+    session.add(active)
+    await session.commit()
+
+    response = client.get(
+        '/users/?cpf=390.533.447-05',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+
+    assert response.status_code == HTTPStatus.OK
     assert response.json()['total'] == 1
-    assert response.json()['items'][0]['id'] == inactive.id
-    assert response.json()['items'][0]['is_active'] is False
+    assert response.json()['items'][0]['id'] == active.id
+    assert response.json()['items'][0]['is_active'] is True
 
 
 def test_raise_read_user_by_id(client, user, token):

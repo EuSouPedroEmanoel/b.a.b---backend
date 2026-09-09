@@ -4,7 +4,7 @@ from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -368,7 +368,14 @@ async def list_loans(
 
     query = _apply_situation_filter(query, loan_filter.situation)
 
-    query = query.order_by(Loan.id)
+    query = query.order_by(
+        case(
+            (Loan.status.in_([LoanStatus.ACTIVE, LoanStatus.OVERDUE]), 0),
+            else_=1,
+        ),
+        Loan.borrowed_at.desc(),
+        Loan.id.desc(),
+    )
     items, total, page, size, pages = await paginate(
         session, query, loan_filter
     )
@@ -391,7 +398,14 @@ async def list_my_loans(
     if loan_filter.status:
         query = query.where(Loan.status == loan_filter.status)
     query = _apply_situation_filter(query, loan_filter.situation)
-    query = query.order_by(Loan.id)
+    query = query.order_by(
+        case(
+            (Loan.status.in_([LoanStatus.ACTIVE, LoanStatus.OVERDUE]), 0),
+            else_=1,
+        ),
+        Loan.borrowed_at.desc(),
+        Loan.id.desc(),
+    )
     items, total, page, size, pages = await paginate(
         session, query, loan_filter
     )
