@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Subir banco de dados com Docker Compose
-        run: docker compose up -d float-tasks-db
+        run: docker compose up -d base-acesso-bibliotecario-db
 
       - name: Aguardar o PostgreSQL inicializar
         run: |

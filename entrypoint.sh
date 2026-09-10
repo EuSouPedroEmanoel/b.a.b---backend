@@ -7,7 +7,7 @@ import socket, time
 s = socket.socket()
 while True:
     try:
-        s.connect(('float-tasks-db', 5432))
+        s.connect(('base-acesso-bibliotecario-db', 5432))
         s.close()
         break
     except Exception:

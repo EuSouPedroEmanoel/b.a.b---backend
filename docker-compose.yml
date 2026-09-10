@@ -1,5 +1,5 @@
 services:
-  float-tasks-db:
+  base-acesso-bibliotecario-db:
     image: postgres:latest
     container_name: postgres-db
     restart: always
@@ -12,16 +12,16 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql
 
-  float-tasks:
-    image: float-tasks
+  base-acesso-bibliotecario:
+    image: base-acesso-bibliotecario
     build: .
     ports:
       - "8000:8000"
     depends_on:
-      - float-tasks-db
+      - base-acesso-bibliotecario-db
     entrypoint: ./entrypoint.sh
     environment:
-      DATABASE_URL: "postgresql+psycopg://root:dev123@float-tasks-db:5432/dev-database"
+      DATABASE_URL: "postgresql+psycopg://root:dev123@base-acesso-bibliotecario-db:5432/dev-database"
       GOOGLE_BOOKS_API_KEY: "${GOOGLE_BOOKS_API_KEY:?GOOGLE_BOOKS_API_KEY must be configured}"
       SECRET_KEY: "${SECRET_KEY:?SECRET_KEY must be configured}"
       CPF_HMAC_SECRET: "${CPF_HMAC_SECRET:?CPF_HMAC_SECRET must be configured}"
@@ -37,7 +37,7 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - float-tasks-db
+      - base-acesso-bibliotecario-db
 
 volumes:
   pgdata:

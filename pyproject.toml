@@ -1,5 +1,5 @@
 [project]
-name = "bibliotec_ginasio"
+name = "base_acesso_bibliotecario"
 version = "0.1.1"
 description = ""
 authors = [
