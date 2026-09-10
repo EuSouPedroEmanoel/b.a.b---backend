@@ -1,9 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
 from src.models import LoanStatus
-from src.routers.books import (  # noqa: PLC2701
-    _interaction_affinity_score,
-    _recency_factor,
+from src.routers.books import (
+    _interaction_affinity_score,  # noqa: PLC2701
+    _recency_factor,  # noqa: PLC2701
 )
 
 
