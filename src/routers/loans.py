@@ -334,6 +334,63 @@ async def return_loan(
     return result
 
 
+@router.post('/{loan_id}/undo-return', response_model=LoanPublic)
+async def undo_return(
+    loan_id: int,
+    session: Session,
+    current_user: LoanOperator,
+):
+    initial = await session.scalar(
+        _loan_public_query().where(Loan.id == loan_id)
+    )
+    if not initial:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='Loan not found'
+        )
+    if (
+        current_user.role != UserRole.SUPER_ADMIN
+        and initial.school_id != current_user.school_id
+    ):
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='Loan not found'
+        )
+    await lock_book_queue(session, initial.copy.book_id)
+    loan = await session.scalar(
+        _loan_public_query().where(Loan.id == loan_id).with_for_update()
+    )
+    if loan is None or loan.status != LoanStatus.RETURNED:
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT, detail='Loan is not returned'
+        )
+    copy = await session.scalar(
+        select(BookCopy).where(BookCopy.id == loan.copy_id).with_for_update()
+    )
+    if copy is None:
+        raise HTTPException(
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            detail='Copy not found',
+        )
+    reservation = await session.scalar(
+        select(Reservation).where(
+            Reservation.copy_id == copy.id,
+            Reservation.status == ReservationStatus.READY,
+        ).with_for_update()
+    )
+    if reservation is not None:
+        reservation.status = ReservationStatus.ACTIVE
+        reservation.copy_id = None
+        reservation.ready_at = None
+        reservation.pickup_expires_at = None
+        session.add(reservation)
+    loan.status = LoanStatus.ACTIVE
+    loan.returned_at = None
+    loan.late_days = 0
+    copy.state = BooksStates.BORROWED
+    session.add_all([loan, copy])
+    await session.commit()
+    return await session.scalar(_loan_public_query().where(Loan.id == loan.id))
+
+
 @router.get('/', response_model=PaginatedResponse[LoanPublic])
 async def list_loans(
     session: Session,
