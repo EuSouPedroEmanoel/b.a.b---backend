@@ -379,3 +379,90 @@ async def cancel_reservation(
             await promote_copy_to_next_reservation(session, copy)
     await session.commit()
     return {'message': 'Reservation cancelled'}
+
+
+@router.post('/{reservation_id}/restore', response_model=Message)
+async def restore_reservation(
+    reservation_id: int,
+    session: Session,
+    current_user: CurrentUser,
+):
+    initial = await session.scalar(
+        select(Reservation).where(Reservation.id == reservation_id)
+    )
+    if not initial:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='Reservation not found'
+        )
+    await lock_book_queue(session, initial.book_id)
+    reservation = await session.scalar(
+        select(Reservation).where(Reservation.id == reservation_id)
+        .with_for_update()
+    )
+    if not reservation:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='Reservation not found'
+        )
+
+    is_owner = (
+        current_user.role != UserRole.SUPER_ADMIN
+        and reservation.user_id == current_user.id
+    )
+    is_staff_same_school = (
+        current_user.role in {UserRole.LIBRARIAN, UserRole.SCHOOL_ADMIN}
+        and reservation.school_id == current_user.school_id
+    )
+    if not (is_owner or is_staff_same_school):
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN, detail='Not enough permissions'
+        )
+    if reservation.status != ReservationStatus.CANCELLED:
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT,
+            detail='Reservation is not cancelled',
+        )
+
+    if reservation.copy_id is not None:
+        copy = await session.scalar(
+            select(BookCopy).where(BookCopy.id == reservation.copy_id)
+            .with_for_update()
+        )
+        if copy is not None and copy.state in {
+            BooksStates.AVAILABLE, BooksStates.RESERVED
+        }:
+            current_holder = await session.scalar(
+                select(Reservation).where(
+                    Reservation.copy_id == copy.id,
+                    Reservation.status == ReservationStatus.READY,
+                    Reservation.id != reservation.id,
+                ).with_for_update()
+            )
+            if current_holder is not None:
+                current_holder.status = ReservationStatus.ACTIVE
+                current_holder.copy_id = None
+                current_holder.ready_at = None
+                current_holder.pickup_expires_at = None
+                session.add(current_holder)
+            reservation.status = ReservationStatus.READY
+            copy.state = BooksStates.RESERVED
+            session.add(copy)
+        else:
+            reservation.copy_id = None
+            reservation.ready_at = None
+            reservation.pickup_expires_at = None
+            reservation.status = ReservationStatus.ACTIVE
+    else:
+        reservation.status = ReservationStatus.ACTIVE
+
+    session.add(reservation)
+    try:
+        await session.commit()
+    except IntegrityError as error:
+        await session.rollback()
+        if _is_active_reservation_conflict(error):
+            raise HTTPException(
+                status_code=HTTPStatus.CONFLICT,
+                detail='Active reservation already exists',
+            ) from error
+        raise
+    return {'message': 'Reservation restored'}
