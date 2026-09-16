@@ -44,10 +44,6 @@ poetry run task test
 
 Defina `SECRET_KEY`, `CPF_HMAC_SECRET`, credenciais do banco e demais variáveis por ambiente. Nunca versione segredos, tokens ou dados reais. Seeds de desenvolvimento devem ser usados apenas em ambiente isolado.
 
-## Auditoria
-
-O relatório de auditoria está em `../docs/security-audit/`. Achados e correções acompanhados nas [issues de segurança](https://github.com/EuSouPedroEmanoel/b.a.b---backend/issues).
-
 ## Licença
 
 Distribuído sob a [licença MIT](LICENSE).
