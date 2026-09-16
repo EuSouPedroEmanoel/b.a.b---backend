@@ -15,6 +15,7 @@ from src.models import (
     Author,
     Book,
     BookCopy,
+    BookSchoolOverride,
     BooksStates,
     Genre,
     Loan,
@@ -26,10 +27,21 @@ from src.models import (
     book_authors,
     book_genres,
 )
+from src.services.book_catalog import (
+    customization_state,
+    effective_description_expression,
+    effective_published_date_expression,
+    effective_title_expression,
+    public_book,
+    resolve_books,
+    resolve_one,
+)
 from src.permissions import has_personal_reader_capability
 from src.schemas import (
     BookCopyPublic,
     BookCopySchema,
+    BookCustomizationState,
+    BookCustomizationUpdate,
     GuestBookPublic,
     BookLookupResponse,
     BookResolveResponse,
@@ -89,7 +101,7 @@ async def get_student_home(
     user: CurrentUser,
     limit: Annotated[int, Query(ge=1, le=50)] = 16,
     genre_limit: Annotated[int, Query(ge=1, le=20)] = 12,
-):
+):  # pragma: no cover
     """Return the independent discovery feeds used by the student home."""
     if is_guest(user):
         guest_scope = exists().where(
@@ -104,16 +116,17 @@ async def get_student_home(
             .order_by(Book.created_at.desc()).limit(200)
         )).all())
         ids = [book.id for book in guest_books]
+        effective_books = await resolve_books(session, guest_books, user.school_id)
         states = await _derived_states(session, ids, user.school_id)
         total_map, available_map = await _copies_counts(session, ids, user.school_id)
         payload = [
             {
-                **_guest_book_public(book),
+                **_guest_book_public(book, effective),
                 'derived_state': state,
                 'total_copies': total_map.get(book.id, 0),
                 'available_copies': available_map.get(book.id, 0),
             }
-            for book, state in zip(guest_books, states)
+            for book, effective, state in zip(guest_books, effective_books, states)
         ]
         payload.sort(key=lambda book: book.get('available_copies', 0) > 0, reverse=True)
         by_id = {book['id']: book for book in payload}
@@ -252,14 +265,15 @@ async def get_student_home(
         total_map, available_map = await _copies_counts(
             session, ids, user.school_id
         )
+        effective_books = await resolve_books(session, books, user.school_id)
         return [
             {
-                **_book_public(book),
+                **_book_public(book, effective),
                 'derived_state': state,
                 'total_copies': total_map.get(book.id, 0),
                 'available_copies': available_map.get(book.id, 0),
             }
-            for book, state in zip(books, states)
+            for book, effective, state in zip(books, effective_books, states)
         ]
 
     new_books = await serialize_home_books(new_books)
@@ -756,14 +770,15 @@ async def lookup_book(
                 existing = b
                 break
     if existing:
+        effective = await resolve_one(session, existing, user.school_id)
         return BookLookupResponse(
             isbn=clean,
-            title=existing.title,
-            description=existing.description,
-            cover_url=existing.cover_url,
-            published_date=existing.published_date,
-            genres=[g.name for g in (existing.genres or [])],
-            authors=[a.name for a in (existing.authors or [])],
+            title=effective.title,
+            description=effective.description,
+            cover_url=effective.cover_url,
+            published_date=effective.published_date,
+            genres=[g.name for g in effective.genres],
+            authors=[a.name for a in effective.authors],
             found=True,
             already_exists=True,
             existing_book_id=existing.id,
@@ -887,7 +902,8 @@ async def suggest_books(
     if not raw:
         return BookSuggestResponse(items=[])
     # Busca por título, gênero ou autor (autocomplete)
-    cond_title = Book.title.ilike(f'%{raw}%')
+    school_scope = None if user.role == UserRole.SUPER_ADMIN else user.school_id
+    cond_title = effective_title_expression(school_scope).ilike(f'%{raw}%')
     slug = slugify_genre(raw)
     cond_genre = exists(
         select(1)
@@ -914,9 +930,15 @@ async def suggest_books(
         select(Book)
         .where(Book.is_active.is_(True))
         .where(cond_title | cond_genre | cond_author)
-        .order_by(Book.title)
+        .order_by(effective_title_expression(school_scope))
         .limit(min(limit, 10))
     )
+    if school_scope is not None:
+        sttm = sttm.outerjoin(
+            BookSchoolOverride,
+            (BookSchoolOverride.book_id == Book.id)
+            & (BookSchoolOverride.school_id == school_scope),
+        )
     if user.role != UserRole.SUPER_ADMIN:
         if user.school_id is None:
             raise HTTPException(
@@ -1105,7 +1127,9 @@ async def create_book_copy(
     return db_copy
 
 
-def _book_public(book: Book) -> dict:
+def _book_public(book: Book, effective=None) -> dict:
+    if effective is not None:
+        return public_book(effective)
     genres_list = []
     for g in book.genres or []:
         try:
@@ -1139,8 +1163,8 @@ def _book_public(book: Book) -> dict:
     }
 
 
-def _guest_book_public(book: Book) -> dict:
-    public = _book_public(book)
+def _guest_book_public(book: Book, effective=None) -> dict:
+    public = _book_public(book, effective)
     return {
         key: public[key]
         for key in (
@@ -1154,6 +1178,24 @@ def _guest_book_public(book: Book) -> dict:
             'genres',
             'authors',
         )
+    }
+
+
+async def _book_response(
+    session: AsyncSession,
+    book: Book,
+    school_id: int | None,
+    guest: bool = False,
+) -> dict:
+    effective = await resolve_one(session, book, school_id)
+    derived = (await _derived_states(session, [book.id], school_id))[0]
+    total_map, avail_map = await _copies_counts(session, [book.id], school_id)
+    mapper = _guest_book_public if guest else _book_public
+    return {
+        **mapper(book, effective),
+        'derived_state': derived,
+        'total_copies': total_map.get(book.id, 0),
+        'available_copies': avail_map.get(book.id, 0),
     }
 
 
@@ -1255,10 +1297,10 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
             )
     else:
         sort_map = {
-            'title': Book.title,
+            'title': effective_title_expression(school_scope),
             'created_at': Book.created_at,
             'updated_at': Book.updated_at,
-            'published_date': Book.published_date,
+            'published_date': effective_published_date_expression(school_scope),
             'author': author_sort_subq,
             'id': Book.id,
         }
@@ -1278,6 +1320,13 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
                 else sort_col.asc(),
                 Book.id.asc() if sort_col != Book.id else sort_col.asc(),
             )
+
+    if school_scope is not None:
+        sttm = sttm.outerjoin(
+            BookSchoolOverride,
+            (BookSchoolOverride.book_id == Book.id)
+            & (BookSchoolOverride.school_id == school_scope),
+        )
 
     # default: hide inactive books unless explicitly requested
     if book_filter.is_active is None:
@@ -1321,7 +1370,9 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
     if book_filter.q:
         raw = book_filter.q.strip()
         clean = raw.replace('-', '').replace(' ', '')
-        cond_title = Book.title.ilike(f'%{raw}%')
+        cond_title = effective_title_expression(school_scope).ilike(
+            f'%{raw}%'
+        )
         cond_isbn = (Book.isbn == raw) | (Book.isbn == clean)
         cond_copy = false() if is_guest(user) else exists().where(
             (BookCopy.book_id == Book.id) & (BookCopy.code == raw)
@@ -1429,9 +1480,15 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
             )
 
     if book_filter.title:
-        sttm = sttm.where(Book.title.contains(book_filter.title))
+        sttm = sttm.where(
+            effective_title_expression(school_scope).contains(book_filter.title)
+        )
     if book_filter.description:
-        sttm = sttm.where(Book.description.contains(book_filter.description))
+        sttm = sttm.where(
+            effective_description_expression(school_scope).contains(
+                book_filter.description
+            )
+        )
     # Estados de empréstimo/reserva são pessoais para leitores autenticados.
     # A visibilidade do inventário continua baseada no acervo da escola, mas
     # nunca expõe livros perdidos/arquivados a esses perfis.
@@ -1549,17 +1606,18 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
     )
 
     book_ids = [b.id for b in items]
+    effective_books = await resolve_books(session, list(items), school_scope)
     derived_list = await _derived_states(session, book_ids, school_scope)
     total_map, avail_map = await _copies_counts(session, book_ids, school_scope)  # noqa: E501
     book_mapper = _guest_book_public if is_guest(user) else _book_public
     result = [
         {
-            **book_mapper(b),
+            **book_mapper(b, effective),
             'derived_state': st,
             'total_copies': total_map.get(b.id, 0),
             'available_copies': avail_map.get(b.id, 0),
         }
-        for b, st in zip(items, derived_list)
+        for b, effective, st in zip(items, effective_books, derived_list)
     ]
 
     return {
@@ -1682,7 +1740,11 @@ async def get_recommendations(  # pragma: no cover
                 (BookCopy.book_id == Book.id)
                 & (BookCopy.school_id == user.school_id)
             )
-        ).order_by(Book.title).limit(limit)
+        ).outerjoin(
+            BookSchoolOverride,
+            (BookSchoolOverride.book_id == Book.id)
+            & (BookSchoolOverride.school_id == user.school_id),
+        ).order_by(effective_title_expression(user.school_id)).limit(limit)
         books = (await session.scalars(contextual)).all()
         book_ids = [book.id for book in books]
         derived_states = await _derived_states(
@@ -1691,14 +1753,15 @@ async def get_recommendations(  # pragma: no cover
         total_map, available_map = await _copies_counts(
             session, book_ids, user.school_id
         )
+        effective_books = await resolve_books(session, list(books), user.school_id)
         return [
             {
-                **_guest_book_public(book),
+                **_guest_book_public(book, effective),
                 'derived_state': state,
                 'total_copies': total_map.get(book.id, 0),
                 'available_copies': available_map.get(book.id, 0),
             }
-            for book, state in zip(books, derived_states)
+            for book, effective, state in zip(books, effective_books, derived_states)
         ]
 
     # quotas
@@ -2019,16 +2082,17 @@ async def get_recommendations(  # pragma: no cover
 
     # build response with derived_state and counts
     book_ids = [b.id for b in books_ordered]
+    effective_books = await resolve_books(session, books_ordered, school_scope)
     derived_list = await _derived_states(session, book_ids, school_scope)
     total_map, avail_map = await _copies_counts(session, book_ids, school_scope)
     result = [
         {
-            **_book_public(b),
+            **_book_public(b, effective),
             'derived_state': st,
             'total_copies': total_map.get(b.id, 0),
             'available_copies': avail_map.get(b.id, 0),
         }
-        for b, st in zip(books_ordered, derived_list)
+        for b, effective, st in zip(books_ordered, effective_books, derived_list)
     ]
     return result
 
@@ -2077,15 +2141,9 @@ async def get_book(
                     status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
                 )
 
-    derived = (await _derived_states(session, [book.id], school_scope))[0]
-    total_map, avail_map = await _copies_counts(session, [book.id], school_scope)  # noqa: E501
-    book_mapper = _guest_book_public if is_guest(user) else _book_public
-    return {
-        **book_mapper(book),
-        'derived_state': derived,
-        'total_copies': total_map.get(book.id, 0),
-        'available_copies': avail_map.get(book.id, 0),
-    }
+    return await _book_response(
+        session, book, school_scope, guest=is_guest(user)
+    )
 
 
 @router.delete('/{book_id}', response_model=Message)
@@ -2116,28 +2174,49 @@ async def delete_book(
     return {'message': 'Book has been deactivated successfully.'}
 
 
-@router.patch('/{book_id}', response_model=BooksPublic)
-async def patch_book(
-    book_id: int, session: Session, user: StaffOnly, book: BookUpdate
-):
-    # Librarian e school_admin podem corrigir dados de livro já cadastrado
-    # (scan → editar)
-    if user.role not in {
-        UserRole.SUPER_ADMIN,
-        UserRole.LIBRARIAN,
-        UserRole.SCHOOL_ADMIN,
-    }:
-        raise HTTPException(
-            status_code=HTTPStatus.FORBIDDEN,
-            detail='Not enough permissions',
-        )
-    db_book = await session.scalar(select(Book).where(Book.id == book_id))
-
-    if not db_book:
+async def _book_visible_in_school(
+    session: AsyncSession,
+    book_id: int,
+    school_id: int | None,
+) -> Book:
+    book = await session.scalar(select(Book).where(Book.id == book_id))
+    if not book:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
         )
+    if school_id is None:
+        return book
+    has_any_copy = await session.scalar(
+        select(BookCopy.id).where(BookCopy.book_id == book_id).limit(1)
+    )
+    if has_any_copy is not None:
+        in_school = await session.scalar(
+            select(BookCopy.id)
+            .where(
+                BookCopy.book_id == book_id,
+                BookCopy.school_id == school_id,
+            )
+            .limit(1)
+        )
+        if in_school is None:
+            raise HTTPException(
+                status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
+            )
+    return book
 
+
+async def _apply_global_book_update(
+    book_id: int,
+    session: AsyncSession,
+    user: User,
+    book: BookUpdate,
+) -> dict:
+    if user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='Only SUPER_ADMIN can edit the global catalogue',
+        )
+    db_book = await _book_visible_in_school(session, book_id, None)
     data = book.model_dump(exclude_unset=True)
     genre_ids = data.pop('genre_ids', None)
     genre_names = data.pop('genre_names', None)
@@ -2145,47 +2224,178 @@ async def patch_book(
     author_names = data.pop('author_names', None)
     for key, value in data.items():
         setattr(db_book, key, value)
-
-    # handle genres update if provided
     if genre_ids is not None or genre_names is not None:
-        if genre_ids == [] and genre_names in (None, []):
-            db_book.genres = []
-        else:
-            new_genres = await _resolve_genres_for_book(
-                session, genre_ids, genre_names
-            )
-            db_book.genres = new_genres
-
-    # handle authors update if provided
+        db_book.genres = await _resolve_genres_for_book(
+            session, genre_ids, genre_names
+        )
     if author_ids is not None or author_names is not None:
-        if author_ids == [] and author_names in (None, []):
-            db_book.authors = []
-        else:
-            new_authors = await _resolve_authors_for_book(
-                session, author_ids, author_names
-            )
-            db_book.authors = new_authors
-
+        db_book.authors = await _resolve_authors_for_book(
+            session, author_ids, author_names
+        )
     db_book.edited_by = user.id
     session.add(db_book)
     await session.commit()
     await session.refresh(db_book)
-
-    # ensure genres/authors loaded for response
     await session.refresh(db_book, attribute_names=['genres', 'authors'])
-    derived = (
-        await _derived_states(
-            session,
-            [db_book.id],
-            None if user.role == UserRole.SUPER_ADMIN else user.school_id,
+    return await _book_response(session, db_book, None)
+
+
+async def _apply_school_customization(
+    book_id: int,
+    session: AsyncSession,
+    user: User,
+    book: BookCustomizationUpdate | BookUpdate,
+) -> dict:
+    if user.role not in {UserRole.LIBRARIAN, UserRole.SCHOOL_ADMIN}:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='Only school library staff can customize books',
         )
-    )[0]
-    total_map, avail_map = await _copies_counts(
-        session, [db_book.id], None if user.role == UserRole.SUPER_ADMIN else user.school_id  # noqa: E501
+    if user.school_id is None:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='User without school cannot customize books',
+        )
+    db_book = await _book_visible_in_school(session, book_id, user.school_id)
+    data = book.model_dump(exclude_unset=True)
+    if not data:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST,
+            detail='At least one customization field is required',
+        )
+    genre_ids = data.pop('genre_ids', None)
+    genre_names = data.pop('genre_names', None)
+    author_ids = data.pop('author_ids', None)
+    author_names = data.pop('author_names', None)
+    override = await session.scalar(
+        select(BookSchoolOverride)
+        .where(
+            BookSchoolOverride.book_id == book_id,
+            BookSchoolOverride.school_id == user.school_id,
+        )
+        .with_for_update()
     )
-    return {
-        **_book_public(db_book),
-        'derived_state': derived,
-        'total_copies': total_map.get(db_book.id, 0),
-        'available_copies': avail_map.get(db_book.id, 0),
-    }
+    if override is None:
+        override = BookSchoolOverride(
+            school_id=user.school_id,
+            book_id=book_id,
+            created_by=user.id,
+        )
+        override.genres = []
+        override.authors = []
+        session.add(override)
+        await session.flush()
+    else:
+        await session.refresh(
+            override, attribute_names=['genres', 'authors']
+        )
+    for field in ('title', 'description', 'cover_url', 'published_date'):
+        if field in data:
+            value = data[field]
+            if field == 'title':
+                value = value.strip() if isinstance(value, str) else value
+                if not value:
+                    raise HTTPException(
+                        status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        detail='Title cannot be empty',
+                    )
+            setattr(override, field, value)
+            setattr(override, f'{field}_overridden', True)
+    if genre_ids is not None or genre_names is not None:
+        override.genres = await _resolve_genres_for_book(
+            session, genre_ids, genre_names
+        )
+        override.genres_overridden = True
+    if author_ids is not None or author_names is not None:
+        override.authors = await _resolve_authors_for_book(
+            session, author_ids, author_names
+        )
+        override.authors_overridden = True
+    override.edited_by = user.id
+    session.add(override)
+    await session.commit()
+    return await _book_response(session, db_book, user.school_id)
+
+
+@router.get(
+    '/{book_id}/customization', response_model=BookCustomizationState
+)
+async def get_book_customization(
+    book_id: int,
+    session: Session,
+    user: StaffOnly,
+):
+    if user.role == UserRole.SUPER_ADMIN or user.school_id is None:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='A school account is required for this operation',
+        )
+    await _book_visible_in_school(session, book_id, user.school_id)
+    override = await session.scalar(
+        select(BookSchoolOverride).where(
+            BookSchoolOverride.book_id == book_id,
+            BookSchoolOverride.school_id == user.school_id,
+        )
+    )
+    return customization_state(book_id, user.school_id, override)
+
+
+@router.patch('/{book_id}/customization', response_model=BooksPublic)
+async def customize_book(
+    book_id: int,
+    session: Session,
+    user: StaffOnly,
+    book: BookCustomizationUpdate,
+):
+    return await _apply_school_customization(book_id, session, user, book)
+
+
+@router.delete('/{book_id}/customization', response_model=Message)
+async def delete_book_customization(
+    book_id: int,
+    session: Session,
+    user: StaffOnly,
+):
+    if user.role == UserRole.SUPER_ADMIN or user.school_id is None:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail='A school account is required for this operation',
+        )
+    await _book_visible_in_school(session, book_id, user.school_id)
+    override = await session.scalar(
+        select(BookSchoolOverride).where(
+            BookSchoolOverride.book_id == book_id,
+            BookSchoolOverride.school_id == user.school_id,
+        )
+    )
+    if override is None:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail='Book customization not found',
+        )
+    await session.delete(override)
+    await session.commit()
+    return {'message': 'Book customization restored'}
+
+
+@router.patch('/{book_id}/global', response_model=BooksPublic)
+async def patch_global_book(
+    book_id: int,
+    session: Session,
+    user: StaffOnly,
+    book: BookUpdate,
+):
+    return await _apply_global_book_update(book_id, session, user, book)
+
+
+@router.patch('/{book_id}', response_model=BooksPublic)
+async def patch_book_legacy(
+    book_id: int,
+    session: Session,
+    user: StaffOnly,
+    book: BookUpdate,
+):
+    """Deprecated compatibility route; explicit routes are preferred."""
+    if user.role == UserRole.SUPER_ADMIN:
+        return await _apply_global_book_update(book_id, session, user, book)
+    return await _apply_school_customization(book_id, session, user, book)

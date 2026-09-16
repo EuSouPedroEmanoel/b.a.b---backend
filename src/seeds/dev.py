@@ -9,6 +9,7 @@ from src.models import (
     Author,
     Book,
     BookCopy,
+    BookSchoolOverride,
     BooksStates,
     Genre,
     Loan,
@@ -21,8 +22,8 @@ from src.models import (
 )
 from src.security import get_password_hash
 from src.settings import Settings
-from src.utils.cpf import cpf_storage_values
 from src.utils.authors import display_name_author, slugify_author
+from src.utils.cpf import cpf_storage_values
 from src.utils.genres import display_name_genre, slugify_genre
 
 settings = Settings()
@@ -429,6 +430,128 @@ async def seed_reservations(
     )
 
 
+async def seed_book_one_customizations(
+    session: AsyncSession,
+    schools: list[School],
+    books: list[Book],
+    super_admin: User,
+) -> None:
+    """Create school-specific descriptions for the first development book."""
+    if not books or not schools:
+        return
+
+    book = books[0]
+    for school in schools:
+        description = (
+            f'Descrição do {book.title} personalizada para {school.name}.'
+        )
+        override = await session.scalar(
+            select(BookSchoolOverride).where(
+                BookSchoolOverride.book_id == book.id,
+                BookSchoolOverride.school_id == school.id,
+            )
+        )
+        if override:
+            override.description = description
+            override.description_overridden = True
+            override.edited_by = super_admin.id
+            session.add(override)
+            print(
+                f'Book {book.id} description override for {school.name} '
+                f'updated (id={override.id})'
+            )
+            continue
+
+        session.add(
+            BookSchoolOverride(
+                school_id=school.id,
+                book_id=book.id,
+                description=description,
+                description_overridden=True,
+                created_by=super_admin.id,
+                edited_by=super_admin.id,
+            )
+        )
+        print(
+            f'Book {book.id} description override for {school.name} created'
+        )
+    await session.commit()
+
+
+async def seed_random_full_customizations(
+    session: AsyncSession,
+    schools: list[School],
+    books: list[Book],
+    super_admin: User,
+) -> None:
+    """Give each development school a few complete book customizations."""
+    available_books = books[1:]
+    if not available_books or not schools:
+        return
+
+    count = min(3, len(available_books))
+    for school_index, school in enumerate(schools):
+        selector = random.Random(f'dev-book-overrides:{school.code}')
+        selected_books = selector.sample(available_books, count)
+        genre_names = [
+            f'Leitura {school.code}',
+            f'Projeto {school.code}',
+        ]
+        genres = [
+            await _get_or_create_genre_seed(session, name)
+            for name in genre_names
+        ]
+        author = await _get_or_create_author_seed(
+            session, f'Autor convidado {school.name}'
+        )
+
+        for book_index, book in enumerate(selected_books, start=1):
+            override = await session.scalar(
+                select(BookSchoolOverride).where(
+                    BookSchoolOverride.book_id == book.id,
+                    BookSchoolOverride.school_id == school.id,
+                )
+            )
+            if not override:
+                override = BookSchoolOverride(
+                    school_id=school.id,
+                    book_id=book.id,
+                    created_by=super_admin.id,
+                )
+                session.add(override)
+                await session.flush()
+
+            override.title = f'{book.title} — Edição {school.name}'
+            override.title_overridden = True
+            override.description = (
+                f'Conteúdo exclusivo da coleção de {school.name}, '
+                f'com material selecionado para a comunidade escolar.'
+            )
+            override.description_overridden = True
+            override.cover_url = (
+                'https://dummyimage.com/400x600/7c3aed/ffffff&text='
+                f'{school.code}+Livro+{book_index}'
+            )
+            override.cover_url_overridden = True
+            override.published_date = date(
+                2025 + school_index,
+                ((book_index + school_index) % 12) + 1,
+                ((book_index * 5) % 28) + 1,
+            )
+            override.published_date_overridden = True
+            override.genres = genres
+            override.genres_overridden = True
+            override.authors = [author]
+            override.authors_overridden = True
+            override.edited_by = super_admin.id
+            session.add(override)
+            print(
+                f'Book {book.id} full customization ready for '
+                f'{school.name}'
+            )
+    await session.commit()
+
+
 async def seed_book_one_history(
     session: AsyncSession,
     schools: list[School],
@@ -529,6 +652,8 @@ async def seed_dev():
         schools = await seed_schools(session)
         users = await seed_users(session, schools)
         books = await seed_books_and_copies(session, schools, users, super_admin)
+        await seed_book_one_customizations(session, schools, books, super_admin)
+        await seed_random_full_customizations(session, schools, books, super_admin)
         await seed_reservations(session, schools, users, books)
         await seed_book_one_history(session, schools, users, books)
     await engine.dispose()

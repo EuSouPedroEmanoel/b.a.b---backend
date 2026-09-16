@@ -57,6 +57,36 @@ book_authors = Table(
     ),
 )
 
+book_school_override_genres = Table(
+    'book_school_override_genres',
+    table_registry.metadata,
+    Column(
+        'override_id',
+        ForeignKey('book_school_overrides.id', ondelete='CASCADE'),
+        primary_key=True,
+    ),
+    Column(
+        'genre_id',
+        ForeignKey('genres.id', ondelete='CASCADE'),
+        primary_key=True,
+    ),
+)
+
+book_school_override_authors = Table(
+    'book_school_override_authors',
+    table_registry.metadata,
+    Column(
+        'override_id',
+        ForeignKey('book_school_overrides.id', ondelete='CASCADE'),
+        primary_key=True,
+    ),
+    Column(
+        'author_id',
+        ForeignKey('authors.id', ondelete='CASCADE'),
+        primary_key=True,
+    ),
+)
+
 
 class BooksStates(str, Enum):
     AVAILABLE = 'available'  # Disponível na estante/acervo
@@ -119,6 +149,12 @@ class School:
     )
 
     users: Mapped[list[User]] = relationship(
+        init=False,
+        back_populates='school',
+        cascade='all, delete-orphan',
+        lazy='selectin',
+    )
+    book_overrides: Mapped[list[BookSchoolOverride]] = relationship(
         init=False,
         back_populates='school',
         cascade='all, delete-orphan',
@@ -512,6 +548,12 @@ class Book:
         back_populates='books',
         lazy='selectin',
     )
+    school_overrides: Mapped[list[BookSchoolOverride]] = relationship(
+        init=False,
+        back_populates='book',
+        cascade='all, delete-orphan',
+        lazy='selectin',
+    )
 
     @staticmethod
     def derived_state_expr(school_id: int | None = None):
@@ -568,6 +610,89 @@ class Book:
         if BooksStates.LOST in states:  # pragma: no cover
             return BooksStates.LOST  # pragma: no cover
         return BooksStates.ARCHIVED  # pragma: no cover
+
+
+@table_registry.mapped_as_dataclass()
+class BookSchoolOverride:
+    __tablename__ = 'book_school_overrides'
+    __table_args__ = (
+        UniqueConstraint(
+            'school_id', 'book_id', name='uq_book_school_override'
+        ),
+        CheckConstraint(
+            'NOT title_overridden OR title IS NOT NULL',
+            name='ck_book_override_title_value',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    school_id: Mapped[int] = mapped_column(
+        ForeignKey('schools.id', ondelete='CASCADE'), nullable=False
+    )
+    book_id: Mapped[int] = mapped_column(
+        ForeignKey('books.id', ondelete='CASCADE'), nullable=False
+    )
+    title: Mapped[str | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
+    )
+    title_overridden: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
+    description: Mapped[str | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
+    )
+    description_overridden: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
+    cover_url: Mapped[str | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
+    )
+    cover_url_overridden: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
+    published_date: Mapped[date | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
+    )
+    published_date_overridden: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
+    genres_overridden: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
+    authors_overridden: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
+    created_by: Mapped[int] = mapped_column(
+        ForeignKey('users.id'), kw_only=True, nullable=False
+    )
+    edited_by: Mapped[int | None] = mapped_column(
+        ForeignKey('users.id'), kw_only=True, default=None, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    school: Mapped[School] = relationship(
+        init=False, back_populates='book_overrides', lazy='selectin'
+    )
+    book: Mapped[Book] = relationship(
+        init=False, back_populates='school_overrides', lazy='selectin'
+    )
+    genres: Mapped[list[Genre]] = relationship(
+        init=False,
+        secondary=book_school_override_genres,
+        lazy='selectin',
+    )
+    authors: Mapped[list[Author]] = relationship(
+        init=False,
+        secondary=book_school_override_authors,
+        lazy='selectin',
+    )
 
 
 @table_registry.mapped_as_dataclass()
@@ -669,7 +794,7 @@ class Loan:
 
     @property
     def book_title(self) -> str:
-        return self.copy.book.title
+        return getattr(self, '_effective_book_title', self.copy.book.title)
 
     @property
     def book_id(self) -> int:
@@ -677,7 +802,9 @@ class Loan:
 
     @property
     def book_cover_url(self) -> str | None:
-        return self.copy.book.cover_url
+        return getattr(
+            self, '_effective_book_cover_url', self.copy.book.cover_url
+        )
 
     @property
     def borrower_username(self) -> str:

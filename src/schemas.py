@@ -678,6 +678,26 @@ class BookUpdate(BaseModel):
     author_names: list[str] | None = None
 
 
+class BookCustomizationUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    cover_url: str | None = None
+    published_date: date | None = None
+    genre_ids: list[int] | None = None
+    genre_names: list[str] | None = None
+    author_ids: list[int] | None = None
+    author_names: list[str] | None = None
+
+    model_config = ConfigDict(extra='forbid')
+
+
+class BookCustomizationState(BaseModel):
+    book_id: int
+    school_id: int
+    has_override: bool
+    overridden_fields: list[str] = Field(default_factory=list)
+
+
 class BookLookupResponse(BaseModel):
     isbn: str
     title: str | None = None

@@ -34,6 +34,7 @@ from src.schemas import (
     PaginatedResponse,
 )
 from src.security import RoleChecker, get_current_user
+from src.services.book_catalog import resolve_one
 from src.utils.cpf import cpf_collision_guard, cpf_lookup_digest
 from src.utils.pagination import paginate
 from src.utils.reservation_queue import (
@@ -83,6 +84,13 @@ def _loan_public_query():
         selectinload(Loan.copy).selectinload(BookCopy.book),
         selectinload(Loan.borrower),
     )
+
+
+async def _loan_public(session: AsyncSession, loan: Loan) -> Loan:
+    effective = await resolve_one(session, loan.copy.book, loan.school_id)
+    loan._effective_book_title = effective.title
+    loan._effective_book_cover_url = effective.cover_url
+    return loan
 
 
 async def _resolve_copy(  # noqa: PLR0912
@@ -262,7 +270,7 @@ async def create_loan(
     loan = await session.scalar(
         _loan_public_query().where(Loan.id == loan.id)
     )
-    return loan
+    return await _loan_public(session, loan)
 
 
 @router.post('/{loan_id}/return', response_model=LoanPublic)
@@ -328,10 +336,11 @@ async def return_loan(
     result = await session.scalar(
         _loan_public_query().where(Loan.id == loan.id)
     )
+    payload = await _loan_public(session, result)
     if reservation is not None:
-        result.pickup_reservation_id = reservation.id
-        result.pickup_reserver_username = reservation.reserver.username
-    return result
+        payload.pickup_reservation_id = reservation.id
+        payload.pickup_reserver_username = reservation.reserver.username
+    return payload
 
 
 @router.post('/{loan_id}/undo-return', response_model=LoanPublic)
@@ -388,7 +397,10 @@ async def undo_return(
     copy.state = BooksStates.BORROWED
     session.add_all([loan, copy])
     await session.commit()
-    return await session.scalar(_loan_public_query().where(Loan.id == loan.id))
+    result = await session.scalar(
+        _loan_public_query().where(Loan.id == loan.id)
+    )
+    return await _loan_public(session, result)
 
 
 @router.get('/', response_model=PaginatedResponse[LoanPublic])
@@ -437,7 +449,7 @@ async def list_loans(
         session, query, loan_filter
     )
     return {
-        'items': items,
+        'items': [await _loan_public(session, item) for item in items],
         'total': total,
         'page': page,
         'size': size,
@@ -467,7 +479,7 @@ async def list_my_loans(
         session, query, loan_filter
     )
     return {
-        'items': items,
+        'items': [await _loan_public(session, item) for item in items],
         'total': total,
         'page': page,
         'size': size,
@@ -503,4 +515,4 @@ async def get_loan(
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Loan not found'
         )
-    return loan
+    return await _loan_public(session, loan)

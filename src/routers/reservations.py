@@ -26,6 +26,7 @@ from src.schemas import (
     ReservationPublic,
 )
 from src.security import get_current_user
+from src.services.book_catalog import resolve_one
 from src.utils.pagination import paginate
 from src.utils.reservation_queue import (
     lock_book_queue,
@@ -46,11 +47,15 @@ Session = Annotated[AsyncSession, Depends(get_session)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-def reservation_public(
+async def reservation_public(
+    session: AsyncSession,
     reservation: Reservation,
     queue_position: int | None = None,
     queue_total: int | None = None,
 ):
+    effective = await resolve_one(
+        session, reservation.book, reservation.school_id
+    )
     return {
         'id': reservation.id,
         'book_id': reservation.book_id,
@@ -59,8 +64,8 @@ def reservation_public(
         'status': reservation.status,
         'created_at': reservation.created_at,
         'copy_id': reservation.copy_id,
-        'book_title': reservation.book.title,
-        'book_cover_url': reservation.book.cover_url,
+        'book_title': effective.title,
+        'book_cover_url': effective.cover_url,
         'reserver_username': reservation.reserver.username,
         'reserver_role': reservation.reserver.role,
         'reserver_is_active': reservation.reserver.is_active,
@@ -205,8 +210,9 @@ async def create_reservation(
     )
     positions, totals = await queue_positions(session, [reservation])
     key = (reservation.book_id, reservation.school_id)
-    return reservation_public(reservation, positions.get(reservation.id),
-                              totals.get(key))
+    return await reservation_public(
+        session, reservation, positions.get(reservation.id), totals.get(key)
+    )
 
 
 @router.get('/', response_model=PaginatedResponse[ReservationPublic])
@@ -243,7 +249,8 @@ async def list_reservations(
     positions, totals = await queue_positions(session, items)
     return {
         'items': [
-            reservation_public(
+            await reservation_public(
+                session,
                 item, positions.get(item.id),
                 totals.get((item.book_id, item.school_id)),
             ) for item in items
@@ -274,7 +281,8 @@ async def list_my_reservations(
     positions, totals = await queue_positions(session, items)
     return {
         'items': [
-            reservation_public(
+            await reservation_public(
+                session,
                 item, positions.get(item.id),
                 totals.get((item.book_id, item.school_id)),
             ) for item in items
@@ -313,8 +321,8 @@ async def get_reservation(
             status_code=HTTPStatus.FORBIDDEN, detail='Not enough permissions'
         )
     positions, totals = await queue_positions(session, [reservation])
-    return reservation_public(
-        reservation,
+    return await reservation_public(
+        session, reservation,
         positions.get(reservation.id),
         totals.get((reservation.book_id, reservation.school_id)),
     )
