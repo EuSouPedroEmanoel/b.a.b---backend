@@ -1,11 +1,25 @@
-# Configuração do segredo de CPF
+# Base de Acesso Bibliotecário — Backend
 
-`CPF_HMAC_SECRET` é obrigatório e deve ser configurado no ambiente da
-aplicação. Gere um valor aleatório com:
+> Projeto acadêmico em desenvolvimento. Não é uma versão pronta para produção.
+
+API REST para gerenciamento de acervo, usuários, empréstimos, reservas e recomendações bibliotecárias.
+
+## Stack
+
+- Python 3.13 e FastAPI
+- SQLAlchemy assíncrono e PostgreSQL
+- Alembic para migrações
+- JWT para autenticação
+
+## Desenvolvimento
 
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(64))"
+poetry install
+poetry run task run
 ```
 
-Guarde o valor em um secret da infraestrutura e mantenha-o estável. Nunca o
-registre no Git, no Dockerfile ou em logs.
+Para subir API, banco e Adminer via Docker: `docker compose up --build`.
+
+## Segredos
+
+Configure `CPF_HMAC_SECRET`, `SECRET_KEY` e demais variáveis por ambiente. Nunca versione credenciais, tokens ou dados reais.
