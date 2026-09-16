@@ -2,7 +2,11 @@
 
 > Projeto acadêmico em desenvolvimento. Não é uma versão pronta para produção.
 
-API REST responsável pelas regras de negócio da Base de Acesso Bibliotecário: catálogo, exemplares, usuários, empréstimos, reservas, calendários, políticas e recomendações.
+API REST que concentra as regras de negócio da Base de Acesso Bibliotecário. O sistema permite que escolas mantenham um catálogo de livros e exemplares, cadastrem sua comunidade e controlem todo o ciclo de circulação.
+
+Bibliotecários e administradores gerenciam autores, gêneros, livros, cópias físicas, usuários, calendários e políticas de empréstimo. Alunos e professores consultam o acervo, visualizam disponibilidade, fazem reservas e acompanham seus empréstimos. O backend registra retiradas e devoluções, calcula prazos, aplica limites por papel e escola e fornece recomendações baseadas no histórico de circulação.
+
+Cada escola funciona como um tenant lógico: consultas e alterações devem respeitar `school_id`, enquanto operações realmente globais ficam reservadas ao superadministrador. A API também fornece autenticação JWT, renovação de sessão, validação de payloads e respostas padronizadas para que o frontend possa oferecer uma experiência segura e consistente.
 
 ## Arquitetura
 
@@ -47,3 +51,36 @@ O relatório de auditoria está em `../docs/security-audit/`. Achados e correç�
 ## Licença
 
 Distribuído sob a [licença MIT](LICENSE).
+
+## Fluxos principais
+
+1. O usuário autentica com suas credenciais.
+2. A API valida assinatura, expiração e tipo do token.
+3. O papel e a escola do usuário são carregados em cada requisição protegida.
+4. Listagens aplicam filtros de tenant antes de consultar o banco.
+5. Schemas Pydantic validam e normalizam os dados recebidos.
+6. Operações de catálogo preservam autores, gêneros e exemplares relacionados.
+7. Uma reserva é associada ao usuário e ao exemplar ou livro solicitado.
+8. Um empréstimo registra retirada, prazo, devolução e status.
+9. Políticas da escola determinam limites e períodos de circulação.
+10. Recomendações usam sinais de interesse e disponibilidade do catálogo.
+
+## Papéis
+
+- `student`: consulta, reserva e acompanha os próprios empréstimos.
+- `teacher`: utiliza o acervo e acompanha seus empréstimos.
+- `librarian`: opera a circulação conforme as permissões da escola.
+- `school_admin`: administra configurações e contas da escola.
+- `super_admin`: executa operações globais de manutenção.
+
+## Banco de dados
+
+As migrações versionadas devem ser aplicadas antes de iniciar a API. Em desenvolvimento, o compose cria um PostgreSQL isolado; em produção, use banco gerenciado, backups e rotação de credenciais.
+
+## Observabilidade
+
+Erros de validação retornam respostas HTTP estruturadas. Logs devem conter contexto operacional suficiente para diagnóstico, sem tokens, senhas, CPF ou outros dados pessoais.
+
+## Contribuição
+
+Abra uma issue descrevendo o contexto, reproduza o problema com dados fictícios e proponha testes. Alterações de autorização devem incluir casos permitidos e negados.
