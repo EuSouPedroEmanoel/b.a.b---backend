@@ -756,6 +756,18 @@ class LoanCreate(BaseModel):
         return self
 
 
+class LoanBookPublic(BaseModel):
+    id: int
+    title: str
+    description: str | None = None
+    isbn: str | None = None
+    cover_url: str | None = None
+    published_date: date | None = None
+    derived_state: BooksStates
+    genres: list[GenrePublic] = Field(default_factory=list)
+    authors: list[AuthorPublic] = Field(default_factory=list)
+
+
 class LoanPublic(BaseModel):
     id: int
     copy_id: int
@@ -774,6 +786,7 @@ class LoanPublic(BaseModel):
     borrower_cpf_masked: str | None = None
     pickup_reservation_id: int | None = None
     pickup_reserver_username: str | None = None
+    book_details: LoanBookPublic | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

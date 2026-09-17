@@ -693,7 +693,14 @@ async def test_list_loans_pagination_and_filter(
         '/loans/me', headers={'Authorization': f'Bearer {student_token}'}
     )
     assert resp2.status_code == HTTPStatus.OK
-    assert resp2.json()['total'] == 5
+    my_loans = resp2.json()
+    assert my_loans['total'] == 5
+    assert my_loans['items'][0]['book_details']['id'] == book.id
+    assert my_loans['items'][0]['book_details']['title'] == book.title
+    assert 'description' in my_loans['items'][0]['book_details']
+    assert 'published_date' in my_loans['items'][0]['book_details']
+    assert 'genres' in my_loans['items'][0]['book_details']
+    assert 'authors' in my_loans['items'][0]['book_details']
 
 
 @pytest.mark.asyncio

@@ -34,7 +34,7 @@ from src.schemas import (
     PaginatedResponse,
 )
 from src.security import RoleChecker, get_current_user
-from src.services.book_catalog import resolve_one
+from src.services.book_catalog import public_book, resolve_one
 from src.utils.cpf import cpf_collision_guard, cpf_lookup_digest
 from src.utils.pagination import paginate
 from src.utils.reservation_queue import (
@@ -90,6 +90,27 @@ async def _loan_public(session: AsyncSession, loan: Loan) -> Loan:
     effective = await resolve_one(session, loan.copy.book, loan.school_id)
     loan._effective_book_title = effective.title
     loan._effective_book_cover_url = effective.cover_url
+    states = set((await session.scalars(
+        select(BookCopy.state).where(
+            BookCopy.book_id == loan.copy.book_id,
+            BookCopy.school_id == loan.school_id,
+        )
+    )).all())
+    state_priority = (
+        BooksStates.AVAILABLE,
+        BooksStates.RESERVED,
+        BooksStates.BORROWED,
+        BooksStates.LOST,
+        BooksStates.ARCHIVED,
+    )
+    derived_state = next(
+        (state for state in state_priority if state in states),
+        BooksStates.ARCHIVED,
+    )
+    loan.book_details = {
+        **public_book(effective),
+        'derived_state': derived_state,
+    }
     return loan
 
 
