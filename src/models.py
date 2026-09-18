@@ -347,6 +347,42 @@ class AccountActivationToken:
 
 
 @table_registry.mapped_as_dataclass()
+class PasswordResetUndo:
+    __tablename__ = 'password_reset_undos'
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True
+    )
+    actor_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    previous_password_hash: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True
+    )
+    previous_account_status: Mapped[str] = mapped_column(
+        String(40), nullable=False
+    )
+    previous_activated_at: Mapped[datetime | None] = mapped_column(
+        nullable=True
+    )
+    previous_auth_version: Mapped[int] = mapped_column(nullable=False)
+    previous_invitation_id: Mapped[int | None] = mapped_column(
+        ForeignKey('account_activation_tokens.id'), nullable=True
+    )
+    reset_invitation_id: Mapped[int] = mapped_column(
+        ForeignKey('account_activation_tokens.id'), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    undone_at: Mapped[datetime | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now()
+    )
+
+
+@table_registry.mapped_as_dataclass()
 class AccountActivationAttempt:
     __tablename__ = 'account_activation_attempts'
 

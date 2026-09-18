@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from http import HTTPStatus
 from typing import Annotated
 
@@ -11,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_session
 from src.models import (
     AccountActivationAudit,
+    AccountActivationToken,
     AccountStatus,
     AdministrativeCapability,
+    PasswordResetUndo,
     User,
     UserAdministrativeCapability,
     UserRole,
@@ -28,6 +30,7 @@ from src.schemas import (
     FilterUser,
     Message,
     PaginatedResponse,
+    PasswordResetPublic,
     StaffCreateSchema,
     StudentCreateSchema,
     UserCreationPublic,
@@ -43,6 +46,7 @@ from src.services.account_activation import (
     active_invitation,
     first_access_url,
     generate_invitation,
+    utcnow,
     verify_activation_hash,
 )
 from src.settings import Settings
@@ -435,6 +439,117 @@ async def regenerate_activation(
     return _invitation_payload(
         target.id, target.username, code, invitation.expires_at
     )
+
+
+@router.post(
+    '/{user_id}/password/reset',
+    response_model=PasswordResetPublic,
+)
+async def reset_password(
+    user_id: int, session: Session, current_user: StaffOnly
+):
+    target = await _activation_target(session, user_id, current_user)
+    previous_invitation = await active_invitation(
+        session, target.id, for_update=True
+    )
+    invitation, code = await generate_invitation(
+        session, target, current_user.id, event='password_reset'
+    )
+    undo = PasswordResetUndo(
+        user_id=target.id,
+        actor_id=current_user.id,
+        previous_password_hash=target.password.encode()
+        if target.password
+        else None,
+        previous_account_status=target.account_status.value,
+        previous_activated_at=target.activated_at,
+        previous_auth_version=target.auth_version,
+        previous_invitation_id=(
+            previous_invitation.id if previous_invitation else None
+        ),
+        reset_invitation_id=invitation.id,
+        expires_at=utcnow() + timedelta(minutes=10),
+    )
+    target.password = None
+    target.account_status = AccountStatus.PENDING_ACTIVATION
+    target.activated_at = None
+    target.auth_version += 1
+    session.add(target)
+    session.add(undo)
+    await session.flush()
+    await session.commit()
+    return PasswordResetPublic(
+        **_invitation_payload(
+            target.id, target.username, code, invitation.expires_at
+        ).model_dump(),
+        undo_id=undo.id,
+    )
+
+
+@router.post('/{user_id}/password/reset/undo', response_model=Message)
+async def undo_password_reset(
+    user_id: int,
+    payload: dict[str, int],
+    session: Session,
+    current_user: StaffOnly,
+):
+    target = await _activation_target(session, user_id, current_user)
+    undo_id = payload.get('undo_id')
+    if undo_id is None:
+        raise HTTPException(HTTPStatus.BAD_REQUEST, 'undo_id is required')
+    undo = await session.scalar(
+        select(PasswordResetUndo)
+        .where(
+            PasswordResetUndo.id == undo_id,
+            PasswordResetUndo.user_id == target.id,
+        )
+        .with_for_update()
+    )
+    now = utcnow()
+    if undo is None or undo.undone_at is not None or undo.expires_at < now:
+        raise HTTPException(
+            HTTPStatus.CONFLICT,
+            'Este reset não pode mais ser desfeito.',
+        )
+    current_invitation = await active_invitation(
+        session, target.id, for_update=True
+    )
+    if (
+        current_invitation is None
+        or current_invitation.id != undo.reset_invitation_id
+    ):
+        raise HTTPException(
+            HTTPStatus.CONFLICT,
+            'Um novo convite já foi gerado para este usuário.',
+        )
+    current_invitation.revoked_at = now
+    if undo.previous_invitation_id is not None:
+        previous_invitation = await session.scalar(
+            select(AccountActivationToken).where(
+                AccountActivationToken.id == undo.previous_invitation_id
+            ).with_for_update()
+        )
+        if previous_invitation and previous_invitation.used_at is None:
+            previous_invitation.revoked_at = None
+    target.password = (
+        undo.previous_password_hash.decode()
+        if undo.previous_password_hash
+        else None
+    )
+    target.account_status = AccountStatus(undo.previous_account_status)
+    target.activated_at = undo.previous_activated_at
+    target.auth_version = undo.previous_auth_version + 1
+    undo.undone_at = now
+    session.add_all([target, current_invitation, undo])
+    session.add(
+        AccountActivationAudit(
+            user_id=target.id,
+            actor_id=current_user.id,
+            event='password_reset_undone',
+        )
+    )
+    await session.commit()
+    return {'message': 'Reset de senha desfeito.'}
 
 
 @router.post(

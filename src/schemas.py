@@ -372,6 +372,10 @@ class ActivationInvitationPublic(BaseModel):
     print_url: str
 
 
+class PasswordResetPublic(ActivationInvitationPublic):
+    undo_id: int
+
+
 class UserCreationPublic(UserPublic):
     activation_invitation: ActivationInvitationPublic
 
