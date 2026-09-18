@@ -25,6 +25,7 @@ from src.models import (
     ReservationStatus,
     ReadingStatus,
     User,
+    UserBookFavorite,
     UserReadingStatus,
     UserRole,
     book_authors,
@@ -1196,6 +1197,9 @@ async def book_response(
     school_id: int | None,
     guest: bool = False,
     reading_status: ReadingStatus | None = None,
+    is_favorite: bool = False,
+    has_been_borrowed: bool = False,
+    has_active_loan: bool = False,
 ) -> dict:
     effective = await resolve_one(session, book, school_id)
     derived = (await _derived_states(session, [book.id], school_id))[0]
@@ -1207,6 +1211,9 @@ async def book_response(
         'total_copies': total_map.get(book.id, 0),
         'available_copies': avail_map.get(book.id, 0),
         'reading_status': reading_status,
+        'is_favorite': is_favorite,
+        'has_been_borrowed': has_been_borrowed,
+        'has_active_loan': has_active_loan,
     }
 
 
@@ -2264,6 +2271,9 @@ async def get_book(
                 )
 
     reading_status = None
+    is_favorite = False
+    has_been_borrowed = False
+    has_active_loan = False
     if user.role == UserRole.STUDENT:
         reading_status = await session.scalar(
             select(UserReadingStatus.status).where(
@@ -2271,12 +2281,41 @@ async def get_book(
                 UserReadingStatus.book_id == book.id,
             )
         )
+        is_favorite = await session.scalar(
+            select(UserBookFavorite.id).where(
+                UserBookFavorite.user_id == user.id,
+                UserBookFavorite.book_id == book.id,
+            )
+        ) is not None
+        has_been_borrowed = await session.scalar(
+            select(Loan.id)
+            .join(BookCopy, BookCopy.id == Loan.copy_id)
+            .where(
+                Loan.user_id == user.id,
+                BookCopy.book_id == book.id,
+            )
+            .limit(1)
+        ) is not None
+        has_active_loan = await session.scalar(
+            select(Loan.id)
+            .join(BookCopy, BookCopy.id == Loan.copy_id)
+            .where(
+                Loan.user_id == user.id,
+                Loan.school_id == user.school_id,
+                BookCopy.book_id == book.id,
+                Loan.status.in_([LoanStatus.ACTIVE, LoanStatus.OVERDUE]),
+            )
+            .limit(1)
+        ) is not None
     return await book_response(
         session,
         book,
         school_scope,
         guest=is_guest(user),
         reading_status=reading_status,
+        is_favorite=is_favorite,
+        has_been_borrowed=has_been_borrowed,
+        has_active_loan=has_active_loan,
     )
 
 

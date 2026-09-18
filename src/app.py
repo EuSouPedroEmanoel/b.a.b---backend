@@ -13,6 +13,7 @@ from src.routers import (
     books,
     circulation_policies,
     copies,
+    favorites,
     genres,
     library_calendar,
     loans,
@@ -70,6 +71,7 @@ app.include_router(
 )
 app.include_router(reading_statuses.router)
 app.include_router(reading_statuses.book_router)
+app.include_router(favorites.router)
 
 
 @app.get('/', status_code=HTTPStatus.OK, response_model=ApiStatus)

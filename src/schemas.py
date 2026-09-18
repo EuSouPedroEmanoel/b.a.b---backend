@@ -696,6 +696,9 @@ class BooksPublic(BooksSchema):
     total_copies: int = 0
     available_copies: int = 0
     reading_status: ReadingStatus | None = None
+    is_favorite: bool = False
+    has_been_borrowed: bool = False
+    has_active_loan: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
     genres: list[GenrePublic] = Field(default_factory=list)
@@ -734,6 +737,11 @@ class ReadingStatusPublic(BaseModel):
     updated_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class BookFavoritePublic(BaseModel):
+    book_id: int
+    is_favorite: bool = True
 
 
 class BookList(BaseModel):

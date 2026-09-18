@@ -292,6 +292,12 @@ class User:
         cascade='all, delete-orphan',
         lazy='selectin',
     )
+    book_favorites: Mapped[list[UserBookFavorite]] = relationship(
+        init=False,
+        back_populates='user',
+        cascade='all, delete-orphan',
+        lazy='selectin',
+    )
 
     @property
     def school_name(self) -> str | None:
@@ -726,6 +732,12 @@ class Book:
         cascade='all, delete-orphan',
         lazy='selectin',
     )
+    book_favorites: Mapped[list[UserBookFavorite]] = relationship(
+        init=False,
+        back_populates='book',
+        cascade='all, delete-orphan',
+        lazy='selectin',
+    )
 
     @staticmethod
     def derived_state_expr(school_id: int | None = None):
@@ -1080,6 +1092,37 @@ class UserReadingStatus:
     )
     book: Mapped[Book] = relationship(
         init=False, back_populates='reading_statuses', lazy='selectin'
+    )
+
+
+@table_registry.mapped_as_dataclass()
+class UserBookFavorite:
+    __tablename__ = 'user_book_favorites'
+    __table_args__ = (
+        UniqueConstraint(
+            'user_id', 'book_id', name='uq_user_book_favorite_user_book'
+        ),
+        Index('ix_user_book_favorite_user', 'user_id'),
+    )
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey('users.id', ondelete='CASCADE'), nullable=False
+    )
+    book_id: Mapped[int] = mapped_column(
+        ForeignKey('books.id', ondelete='CASCADE'), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now()
+    )
+
+    user: Mapped[User] = relationship(
+        init=False, back_populates='book_favorites', lazy='selectin'
+    )
+    book: Mapped[Book] = relationship(
+        init=False, back_populates='book_favorites', lazy='selectin'
     )
 
 
