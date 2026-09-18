@@ -23,7 +23,9 @@ from src.models import (
     LoanStatus,
     Reservation,
     ReservationStatus,
+    ReadingStatus,
     User,
+    UserReadingStatus,
     UserRole,
     book_authors,
     book_genres,
@@ -119,6 +121,7 @@ async def get_student_home(
         ids = [book.id for book in guest_books]
         effective_books = await resolve_books(session, guest_books, user.school_id)
         states = await _derived_states(session, ids, user.school_id)
+        reading_map = {}
         total_map, available_map = await _copies_counts(session, ids, user.school_id)
         payload = [
             {
@@ -126,6 +129,7 @@ async def get_student_home(
                 'derived_state': state,
                 'total_copies': total_map.get(book.id, 0),
                 'available_copies': available_map.get(book.id, 0),
+                'reading_status': reading_map.get(book.id),
             }
             for book, effective, state in zip(guest_books, effective_books, states)
         ]
@@ -263,6 +267,9 @@ async def get_student_home(
             return []
         ids = [book.id for book in books]
         states = await _derived_states(session, ids, user.school_id)
+        reading_map = await _reading_status_map(
+            session, ids, user.id if user.role == UserRole.STUDENT else None
+        )
         total_map, available_map = await _copies_counts(
             session, ids, user.school_id
         )
@@ -273,6 +280,7 @@ async def get_student_home(
                 'derived_state': state,
                 'total_copies': total_map.get(book.id, 0),
                 'available_copies': available_map.get(book.id, 0),
+                'reading_status': reading_map.get(book.id),
             }
             for book, effective, state in zip(books, effective_books, states)
         ]
@@ -1182,11 +1190,12 @@ def _guest_book_public(book: Book, effective=None) -> dict:
     }
 
 
-async def _book_response(
+async def book_response(
     session: AsyncSession,
     book: Book,
     school_id: int | None,
     guest: bool = False,
+    reading_status: ReadingStatus | None = None,
 ) -> dict:
     effective = await resolve_one(session, book, school_id)
     derived = (await _derived_states(session, [book.id], school_id))[0]
@@ -1197,7 +1206,38 @@ async def _book_response(
         'derived_state': derived,
         'total_copies': total_map.get(book.id, 0),
         'available_copies': avail_map.get(book.id, 0),
+        'reading_status': reading_status,
     }
+
+
+async def _reading_status_map(
+    session: AsyncSession, book_ids: list[int], user_id: int | None
+) -> dict[int, ReadingStatus]:
+    if not book_ids or user_id is None:
+        return {}
+    rows = await session.execute(
+        select(UserReadingStatus.book_id, UserReadingStatus.status).where(
+            UserReadingStatus.user_id == user_id,
+            UserReadingStatus.book_id.in_(book_ids),
+        )
+    )
+    return {book_id: status for book_id, status in rows.all()}
+
+
+def book_payload(book: Book, effective=None) -> dict:
+    return _book_public(book, effective)
+
+
+async def derived_states(
+    session: AsyncSession, book_ids: list[int], school_scope: int | None
+) -> list[BooksStates]:
+    return await _derived_states(session, book_ids, school_scope)
+
+
+async def copies_counts(
+    session: AsyncSession, book_ids: list[int], school_scope: int | None
+) -> tuple[dict[int, int], dict[int, int]]:
+    return await _copies_counts(session, book_ids, school_scope)
 
 
 async def _derived_states(
@@ -1683,6 +1723,9 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
     effective_books = await resolve_books(session, list(items), school_scope)
     derived_list = await _derived_states(session, book_ids, school_scope)
     total_map, avail_map = await _copies_counts(session, book_ids, school_scope)  # noqa: E501
+    reading_map = await _reading_status_map(
+        session, book_ids, user.id if user.role == UserRole.STUDENT else None
+    )
     book_mapper = _guest_book_public if is_guest(user) else _book_public
     result = [
         {
@@ -1690,6 +1733,7 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
             'derived_state': st,
             'total_copies': total_map.get(b.id, 0),
             'available_copies': avail_map.get(b.id, 0),
+            'reading_status': reading_map.get(b.id),
         }
         for b, effective, st in zip(items, effective_books, derived_list)
     ]
@@ -2159,12 +2203,16 @@ async def get_recommendations(  # pragma: no cover
     effective_books = await resolve_books(session, books_ordered, school_scope)
     derived_list = await _derived_states(session, book_ids, school_scope)
     total_map, avail_map = await _copies_counts(session, book_ids, school_scope)
+    reading_map = await _reading_status_map(
+        session, book_ids, user.id if user.role == UserRole.STUDENT else None
+    )
     result = [
         {
             **_book_public(b, effective),
             'derived_state': st,
             'total_copies': total_map.get(b.id, 0),
             'available_copies': avail_map.get(b.id, 0),
+            'reading_status': reading_map.get(b.id),
         }
         for b, effective, st in zip(books_ordered, effective_books, derived_list)
     ]
@@ -2215,8 +2263,20 @@ async def get_book(
                     status_code=HTTPStatus.NOT_FOUND, detail='Book not found.'
                 )
 
-    return await _book_response(
-        session, book, school_scope, guest=is_guest(user)
+    reading_status = None
+    if user.role == UserRole.STUDENT:
+        reading_status = await session.scalar(
+            select(UserReadingStatus.status).where(
+                UserReadingStatus.user_id == user.id,
+                UserReadingStatus.book_id == book.id,
+            )
+        )
+    return await book_response(
+        session,
+        book,
+        school_scope,
+        guest=is_guest(user),
+        reading_status=reading_status,
     )
 
 
@@ -2311,7 +2371,7 @@ async def _apply_global_book_update(
     await session.commit()
     await session.refresh(db_book)
     await session.refresh(db_book, attribute_names=['genres', 'authors'])
-    return await _book_response(session, db_book, None)
+    return await book_response(session, db_book, None)
 
 
 async def _apply_school_customization(
@@ -2388,7 +2448,7 @@ async def _apply_school_customization(
     override.edited_by = user.id
     session.add(override)
     await session.commit()
-    return await _book_response(session, db_book, user.school_id)
+    return await book_response(session, db_book, user.school_id)
 
 
 @router.get(

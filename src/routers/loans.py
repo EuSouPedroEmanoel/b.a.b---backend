@@ -21,9 +21,11 @@ from src.models import (
     BooksStates,
     Loan,
     LoanStatus,
+    ReadingStatus,
     Reservation,
     ReservationStatus,
     User,
+    UserReadingStatus,
     UserRole,
 )
 from src.permissions import has_personal_reader_capability
@@ -286,6 +288,27 @@ async def create_loan(
     if reservation is not None:
         reservation.status = ReservationStatus.FULFILLED
         session.add(reservation)
+
+    if borrower.role == UserRole.STUDENT:
+        reading_status = await session.scalar(
+            select(UserReadingStatus)
+            .where(
+                UserReadingStatus.user_id == borrower.id,
+                UserReadingStatus.book_id == copy.book_id,
+            )
+            .with_for_update()
+        )
+        if reading_status is None:
+            session.add(
+                UserReadingStatus(
+                    user_id=borrower.id,
+                    book_id=copy.book_id,
+                    status=ReadingStatus.READING,
+                )
+            )
+        else:
+            reading_status.status = ReadingStatus.READING
+            session.add(reading_status)
 
     await session.commit()
     loan = await session.scalar(

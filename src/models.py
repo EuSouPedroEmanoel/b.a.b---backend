@@ -137,6 +137,13 @@ class ReservationStatus(str, Enum):
     EXPIRED = 'expired'
 
 
+class ReadingStatus(str, Enum):
+    WANT_TO_READ = 'want_to_read'
+    READING = 'reading'
+    REREADING = 'rereading'
+    READ = 'read'
+
+
 @table_registry.mapped_as_dataclass()
 class School:
     __tablename__ = 'schools'
@@ -274,6 +281,12 @@ class User:
     capability_assignments: Mapped[
         list[UserAdministrativeCapability]
     ] = relationship(
+        init=False,
+        back_populates='user',
+        cascade='all, delete-orphan',
+        lazy='selectin',
+    )
+    reading_statuses: Mapped[list[UserReadingStatus]] = relationship(
         init=False,
         back_populates='user',
         cascade='all, delete-orphan',
@@ -707,6 +720,12 @@ class Book:
         cascade='all, delete-orphan',
         lazy='selectin',
     )
+    reading_statuses: Mapped[list[UserReadingStatus]] = relationship(
+        init=False,
+        back_populates='book',
+        cascade='all, delete-orphan',
+        lazy='selectin',
+    )
 
     @staticmethod
     def derived_state_expr(school_id: int | None = None):
@@ -1019,6 +1038,48 @@ class Reservation:
     school: Mapped[School] = relationship(init=False, lazy='selectin')
     copy: Mapped[BookCopy | None] = relationship(
         init=False, foreign_keys='Reservation.copy_id', lazy='selectin'
+    )
+
+
+@table_registry.mapped_as_dataclass()
+class UserReadingStatus:
+    __tablename__ = 'user_reading_statuses'
+    __table_args__ = (
+        UniqueConstraint(
+            'user_id', 'book_id', name='uq_user_reading_status_user_book'
+        ),
+        Index('ix_user_reading_status_user_status', 'user_id', 'status'),
+    )
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey('users.id', ondelete='CASCADE'), nullable=False
+    )
+    book_id: Mapped[int] = mapped_column(
+        ForeignKey('books.id', ondelete='CASCADE'), nullable=False
+    )
+    status: Mapped[ReadingStatus] = mapped_column(
+        SQLEnum(
+            ReadingStatus,
+            values_callable=lambda x: [e.value for e in x],
+            name='readingstatus',
+        ),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    user: Mapped[User] = relationship(
+        init=False, back_populates='reading_statuses', lazy='selectin'
+    )
+    book: Mapped[Book] = relationship(
+        init=False, back_populates='reading_statuses', lazy='selectin'
     )
 
 

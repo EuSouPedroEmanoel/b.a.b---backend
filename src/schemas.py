@@ -15,6 +15,7 @@ from src.models import (
     BookCondition,
     BooksStates,
     LoanStatus,
+    ReadingStatus,
     ReservationStatus,
     UserRole,
 )
@@ -694,6 +695,7 @@ class BooksPublic(BooksSchema):
     derived_state: BooksStates = BooksStates.ARCHIVED
     total_copies: int = 0
     available_copies: int = 0
+    reading_status: ReadingStatus | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     genres: list[GenrePublic] = Field(default_factory=list)
@@ -719,6 +721,19 @@ class GuestBookPublic(BaseModel):
     available_copies: int = 0
     genres: list[GenrePublic] = Field(default_factory=list)
     authors: list[AuthorPublic] = Field(default_factory=list)
+
+
+class ReadingStatusUpdate(BaseModel):
+    status: ReadingStatus
+
+
+class ReadingStatusPublic(BaseModel):
+    book_id: int
+    status: ReadingStatus | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class BookList(BaseModel):

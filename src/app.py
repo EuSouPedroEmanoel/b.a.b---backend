@@ -16,6 +16,7 @@ from src.routers import (
     genres,
     library_calendar,
     loans,
+    reading_statuses,
     reservations,
     schools,
     users,
@@ -67,6 +68,8 @@ app.include_router(loans.router, dependencies=[Depends(require_account)])
 app.include_router(
     reservations.router, dependencies=[Depends(require_account)]
 )
+app.include_router(reading_statuses.router)
+app.include_router(reading_statuses.book_router)
 
 
 @app.get('/', status_code=HTTPStatus.OK, response_model=ApiStatus)
