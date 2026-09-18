@@ -85,8 +85,7 @@ async def login_for_access_token(
     session: Session,
 ):
     sttm = select(User).where(
-        (User.username == form_data.username)
-        | (User.email == form_data.username)
+            (User.username == form_data.username)
     )
     user = await session.scalar(sttm)
 

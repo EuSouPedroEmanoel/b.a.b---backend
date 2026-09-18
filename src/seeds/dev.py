@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import random
 from datetime import date, datetime, timedelta
 
@@ -32,7 +33,6 @@ DEV_PASSWORD = 'dev123'
 DEV_SUPER_ADMIN = {
     'username': 'dev',
     'name': 'Dev Super Admin',
-    'email': 'dev@email.com',
     'password': 'dev123',
 }
 
@@ -62,6 +62,19 @@ def _cpf_with_check(base: str) -> str:
     return base + str(d1) + str(d2)
 
 
+def _cpf_fields(username: str) -> dict:
+    number = int.from_bytes(
+        hashlib.sha256(username.encode()).digest()[:8], 'big'
+    ) % 1_000_000_000
+    cpf = _cpf_with_check(str(number).zfill(9))
+    lookup_hash, collision_guard, last2 = cpf_storage_values(cpf)
+    return {
+        'cpf_lookup_hash': lookup_hash,
+        'cpf_collision_guard': collision_guard,
+        'cpf_last2': last2,
+    }
+
+
 def _student_fields(username: str) -> dict:
     num = username.replace('student_dev', '').replace('_dev', '') or '0'
     num = num.zfill(2)
@@ -69,12 +82,7 @@ def _student_fields(username: str) -> dict:
     letras = ('A', 'B')
     hoje = date.today()
     idade = 10 + (idx % 5)  # 10..14 anos
-    cpf = _cpf_with_check(f'{num}'.rjust(9, '0'))
-    lookup_hash, collision_guard, last2 = cpf_storage_values(cpf)
     return {
-        'cpf_lookup_hash': lookup_hash,
-        'cpf_collision_guard': collision_guard,
-        'cpf_last2': last2,
         'birthdate': date(hoje.year - idade, hoje.month, hoje.day),
         'turma_numero': 6 + (idx % 4),  # 6, 7, 8, 9 -> ex.: 7A, 8B
         'turma_letra': letras[idx % 2],  # A, B alternando
@@ -113,28 +121,21 @@ async def seed_users(session: AsyncSession, schools: list[School]) -> dict:
     specs = []
     for idx, school in enumerate(schools, start=1):
         specs.extend([  # noqa: E501
-            (f'school_admin_dev{idx}', f'school_admin_dev{idx}@exemplo.com', UserRole.SCHOOL_ADMIN, school.id),  # noqa: E501
-            (f'librarian_dev{idx}', f'librarian_dev{idx}@exemplo.com', UserRole.LIBRARIAN, school.id),  # noqa: E501
-            (f'teacher_dev{idx}', f'teacher_dev{idx}@exemplo.com', UserRole.TEACHER, school.id),  # noqa: E501
-            (f'student_dev{idx}', f'student_dev{idx}@exemplo.com', UserRole.STUDENT, school.id),  # noqa: E501
+            (f'school_admin_dev{idx}', UserRole.SCHOOL_ADMIN, school.id),
+            (f'librarian_dev{idx}', UserRole.LIBRARIAN, school.id),
+            (f'teacher_dev{idx}', UserRole.TEACHER, school.id),
+            (f'student_dev{idx}', UserRole.STUDENT, school.id),
         ])
-    for username, email, role, school_id in specs:
+    for username, role, school_id in specs:
         existing = await session.scalar(
             select(User).where(User.username == username)
         )
         if existing:
-            if role == UserRole.STUDENT and (
-                existing.cpf_lookup_hash is None
-                or existing.cpf_collision_guard == existing.cpf_lookup_hash
-            ):
-                cpf = _cpf_with_check(
-                    f'{username.replace("student_dev", "").zfill(2)}'.rjust(9, '0')
-                )
-                (
-                    existing.cpf_lookup_hash,
-                    existing.cpf_collision_guard,
-                    existing.cpf_last2,
-                ) = cpf_storage_values(cpf)
+            if existing.cpf_lookup_hash is None:
+                fields = _cpf_fields(username)
+                existing.cpf_lookup_hash = fields['cpf_lookup_hash']
+                existing.cpf_collision_guard = fields['cpf_collision_guard']
+                existing.cpf_last2 = fields['cpf_last2']
                 session.add(existing)
                 await session.flush()
                 print(f'User {username} CPF data repaired (id={existing.id})')
@@ -144,10 +145,10 @@ async def seed_users(session: AsyncSession, schools: list[School]) -> dict:
         user = User(
             username=username,
             name=_display_name(username, role),
-            email=email,
             password=get_password_hash(DEV_PASSWORD),
             role=role,
             school_id=school_id,
+            **_cpf_fields(username),
             **(_student_fields(username) if role == UserRole.STUDENT else {}),
         )
         session.add(user)
@@ -637,7 +638,7 @@ async def seed_dev():
             super_admin = User(
                 username=DEV_SUPER_ADMIN['username'],
                 name=DEV_SUPER_ADMIN['name'],
-                email=DEV_SUPER_ADMIN['email'],
+                **_cpf_fields(DEV_SUPER_ADMIN['username']),
                 password=get_password_hash(DEV_SUPER_ADMIN['password']),
                 role=UserRole.SUPER_ADMIN,
                 school_id=None,
@@ -648,6 +649,13 @@ async def seed_dev():
             await session.commit()
             await session.refresh(super_admin)
         else:
+            if super_admin.cpf_lookup_hash is None:
+                fields = _cpf_fields(DEV_SUPER_ADMIN['username'])
+                super_admin.cpf_lookup_hash = fields['cpf_lookup_hash']
+                super_admin.cpf_collision_guard = fields['cpf_collision_guard']
+                super_admin.cpf_last2 = fields['cpf_last2']
+                session.add(super_admin)
+                await session.commit()
             print(f"DEV SUPER_ADMIN {super_admin.username} already exists (id={super_admin.id})")
         schools = await seed_schools(session)
         users = await seed_users(session, schools)

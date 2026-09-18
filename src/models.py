@@ -195,7 +195,6 @@ class User:
     name: Mapped[str] = mapped_column(
         String(120), kw_only=True, default='', nullable=False
     )
-    email: Mapped[str] = mapped_column(unique=True, nullable=True)
     cpf_lookup_hash: Mapped[bytes | None] = mapped_column(
         LargeBinary(32), kw_only=True, default=None,
         nullable=True

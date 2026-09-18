@@ -212,16 +212,23 @@ async def create_user(
             status_code=HTTPStatus.CONFLICT,
             detail='Username, Email or CPF already exists!!',
         )
+    username = user.username
+    if user.role == UserRole.STUDENT:
+        username = await _make_unique_username(
+            session, user.name or '', user.cpf
+        )
     db_user = User(
-        username=user.username,
+        username=username,
         name=user.name or user.username,
-        email=user.email,
         cpf_lookup_hash=lookup_hash,
         cpf_collision_guard=collision_guard,
         cpf_last2=last2,
         password=None,
         role=user.role,
         school_id=target_school_id,
+        birthdate=user.birthdate,
+        turma_numero=user.turma_numero,
+        turma_letra=user.turma_letra,
         account_status=AccountStatus.PENDING_ACTIVATION,
     )
     session.add(db_user)
@@ -309,7 +316,6 @@ async def create_student(
     db_user = User(
         username=username,
         name=payload.name,
-        email=None,
         cpf_lookup_hash=lookup_hash,
         cpf_collision_guard=collision_guard,
         cpf_last2=last2,
@@ -636,8 +642,6 @@ async def _apply_updates(
         target.username = data['username']
     if 'name' in data and data['name'] is not None:
         target.name = data['name']
-    if 'email' in data:
-        target.email = data['email']
     if 'cpf' in data:
         cpf = normalize_cpf(data['cpf'])
         if not validate_cpf(cpf):

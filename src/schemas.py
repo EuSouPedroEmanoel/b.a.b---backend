@@ -4,7 +4,6 @@ from typing import Generic, Literal, TypeVar
 from pydantic import (
     BaseModel,
     ConfigDict,
-    EmailStr,
     Field,
     field_validator,
     model_validator,
@@ -142,14 +141,12 @@ class CirculationPoliciesPublic(BaseModel):
 class UserSchema(BaseModel):
     username: str
     name: str
-    email: EmailStr
     password: str
 
 
 class UserPublic(BaseModel):
     username: str
     name: str
-    email: EmailStr | None = None
     cpf_masked: str | None = None
     birthdate: date | None = None
     turma_numero: int | None = None
@@ -175,7 +172,6 @@ class CurrentUserPublic(BaseModel):
     id: int
     username: str
     name: str
-    email: EmailStr | None = None
     role: UserRole
     school_id: int | None = None
     school_name: str | None = None
@@ -250,16 +246,18 @@ class AdministrativeCapabilitiesPublic(BaseModel):
 
 
 class StaffCreateSchema(BaseModel):
-    username: str
+    username: str | None = None
     name: str | None = Field(default=None, min_length=1, max_length=120)
-    email: EmailStr | None = None
     cpf: str
     role: UserRole = UserRole.LIBRARIAN
     school_id: int | None = None  # only honored for SUPER_ADMIN
+    birthdate: date | None = None
+    turma_numero: int | None = Field(default=None, ge=1, le=12)
+    turma_letra: str | None = Field(default=None, min_length=1, max_length=1)
 
     @model_validator(mode='after')
     def default_name_from_username(self):
-        if self.name is None:
+        if self.name is None and self.username is not None:
             self.name = self.username
         return self
 
@@ -282,6 +280,24 @@ class StaffCreateSchema(BaseModel):
             raise ValueError(
                 f'Role deve ser um de: {", ".join(r.value for r in allowed)}'
             )
+        return self
+
+    @model_validator(mode='after')
+    def validate_student_fields(self):
+        if self.role == UserRole.STUDENT:
+            if self.name is None or self.birthdate is None:
+                raise ValueError(
+                    'Aluno deve informar nome e data de nascimento'
+                )
+            validate_birthdate(self.birthdate)
+            if (self.turma_numero is None) != (self.turma_letra is None):
+                raise ValueError(
+                    'turma_numero e turma_letra devem ser informados juntos'
+                )
+            if self.turma_numero is None or self.turma_letra is None:
+                raise ValueError('Aluno deve informar a turma')
+        elif self.username is None:
+            raise ValueError('Nome de usuário é obrigatório')
         return self
 
 
@@ -327,7 +343,6 @@ class StudentCreateSchema(BaseModel):
 class SchoolAdminCreateSchema(BaseModel):
     username: str
     name: str | None = Field(default=None, min_length=1, max_length=120)
-    email: EmailStr
     cpf: str
 
     @model_validator(mode='after')
@@ -347,7 +362,6 @@ class SchoolAdminCreateSchema(BaseModel):
 class UserUpdateSelf(BaseModel):
     username: str | None = Field(default=None, min_length=1)
     name: str | None = Field(default=None, min_length=1, max_length=120)
-    email: EmailStr | None = None
     cpf: str | None = None
     birthdate: date | None = None
     turma_numero: int | None = Field(default=None, ge=1, le=12)
