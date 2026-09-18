@@ -14,6 +14,7 @@ from src.database import get_session
 from src.models import (
     Author,
     Book,
+    BookCondition,
     BookCopy,
     BookSchoolOverride,
     BooksStates,
@@ -1470,9 +1471,43 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
                 cond_avail_q = (
                     Book.derived_state_expr(school_scope) == matched_state
                 )
-        if cond_avail_q is not None:
+        condition_map = {
+            'novo': BookCondition.NEW,
+            'new': BookCondition.NEW,
+            'bom': BookCondition.GOOD,
+            'good': BookCondition.GOOD,
+            'regular': BookCondition.FAIR,
+            'fair': BookCondition.FAIR,
+            'ruim': BookCondition.POOR,
+            'poor': BookCondition.POOR,
+            'pessimo': BookCondition.BAD,
+            'péssimo': BookCondition.BAD,
+            'bad': BookCondition.BAD,
+        }
+        matched_condition = condition_map.get(normalized)
+        can_search_condition = user.role in {
+            UserRole.SUPER_ADMIN, UserRole.SCHOOL_ADMIN, UserRole.LIBRARIAN
+        } or (
+            user.role == UserRole.STUDENT
+            and user.school_allows_student_condition_filter
+        )
+        cond_condition_q = None
+        if matched_condition is not None and can_search_condition:
+            cond_condition_q = exists().where(
+                (BookCopy.book_id == Book.id)
+                & (BookCopy.condition == matched_condition)
+            )
+            if user.role != UserRole.SUPER_ADMIN:
+                cond_condition_q = exists().where(
+                    (BookCopy.book_id == Book.id)
+                    & (BookCopy.condition == matched_condition)
+                    & (BookCopy.school_id == user.school_id)
+                )
+        if cond_avail_q is not None or cond_condition_q is not None:
             sttm = sttm.where(
-                cond_title | cond_isbn | cond_copy | cond_genre_q | cond_author_q | cond_avail_q
+                cond_title | cond_isbn | cond_copy | cond_genre_q | cond_author_q
+                | (cond_avail_q if cond_avail_q is not None else false())
+                | (cond_condition_q if cond_condition_q is not None else false())
             )
         else:
             sttm = sttm.where(
@@ -1483,6 +1518,25 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
         sttm = sttm.where(
             effective_title_expression(school_scope).contains(book_filter.title)
         )
+    if book_filter.condition:
+        can_filter_condition = user.role in {
+            UserRole.SUPER_ADMIN, UserRole.SCHOOL_ADMIN, UserRole.LIBRARIAN
+        } or (
+            user.role == UserRole.STUDENT
+            and user.school_allows_student_condition_filter
+        )
+        if can_filter_condition:
+            condition_query = exists().where(
+                (BookCopy.book_id == Book.id)
+                & (BookCopy.condition == book_filter.condition)
+            )
+            if user.role != UserRole.SUPER_ADMIN:
+                condition_query = exists().where(
+                    (BookCopy.book_id == Book.id)
+                    & (BookCopy.condition == book_filter.condition)
+                    & (BookCopy.school_id == user.school_id)
+                )
+            sttm = sttm.where(condition_query)
     if book_filter.description:
         sttm = sttm.where(
             effective_description_expression(school_scope).contains(
@@ -1494,11 +1548,18 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
     # nunca expõe livros perdidos/arquivados a esses perfis.
     if has_personal_reader_capability(user.role):
         derived_state = Book.derived_state_expr(school_scope)
-        visible_inventory = derived_state.in_([
+        can_view_restricted_availability = (
+            user.role == UserRole.STUDENT
+            and user.school_allows_student_restricted_availability
+        )
+        visible_states = [
             BooksStates.AVAILABLE,
             BooksStates.RESERVED,
             BooksStates.BORROWED,
-        ])
+        ]
+        if can_view_restricted_availability:
+            visible_states.extend([BooksStates.LOST, BooksStates.ARCHIVED])
+        visible_inventory = derived_state.in_(visible_states)
         own_loan = exists().where(
             (Loan.copy_id == BookCopy.id)
             & (BookCopy.book_id == Book.id)
@@ -1530,15 +1591,28 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
             BooksStates.LOST,
             BooksStates.ARCHIVED,
         }:
-            sttm = sttm.where(false())
+            if not can_view_restricted_availability:
+                sttm = sttm.where(false())
         elif book_filter.state is None:
             # Sem filtro, o leitor vê o acervo disponível e seus próprios
             # empréstimos/reservas para não perder acesso a esses registros.
-            sttm = sttm.where(
-                (derived_state == BooksStates.AVAILABLE)
-                | own_loan
-                | own_reservation
+            restricted_search = (
+                can_view_restricted_availability
+                and book_filter.q is not None
+                and book_filter.q.strip().lower() in {
+                    'perdido', 'lost', 'arquivado', 'archived',
+                    'novo', 'new', 'bom', 'good', 'regular', 'fair',
+                    'ruim', 'poor', 'pessimo', 'péssimo', 'bad',
+                }
             )
+            if restricted_search:
+                sttm = sttm.where(visible_inventory)
+            else:
+                sttm = sttm.where(
+                    (derived_state == BooksStates.AVAILABLE)
+                    | own_loan
+                    | own_reservation
+                )
     elif book_filter.state:
         sttm = sttm.where(
             Book.derived_state_expr(school_scope) == book_filter.state

@@ -156,6 +156,8 @@ class UserPublic(BaseModel):
     school_id: int | None = None
     school_name: str | None = None
     school_code: str | None = None
+    school_allows_student_condition_filter: bool = False
+    school_allows_student_restricted_availability: bool = False
     is_active: bool = True
     account_status: AccountStatus = AccountStatus.ACTIVE
     activated_at: datetime | None = None
@@ -176,6 +178,8 @@ class CurrentUserPublic(BaseModel):
     school_id: int | None = None
     school_name: str | None = None
     school_code: str | None = None
+    school_allows_student_condition_filter: bool = False
+    school_allows_student_restricted_availability: bool = False
     is_active: bool
     account_status: AccountStatus
     administrative_capabilities: list[AdministrativeCapability] = []
@@ -455,9 +459,16 @@ class SchoolSchema(BaseModel):
     code: str = Field(min_length=2)
 
 
+class SchoolSettingsUpdate(BaseModel):
+    allow_student_condition_filter: bool
+    allow_student_restricted_availability: bool
+
+
 class SchoolPublic(SchoolSchema):
     id: int
     is_active: bool
+    allow_student_condition_filter: bool = False
+    allow_student_restricted_availability: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -550,11 +561,12 @@ class FilterBook(FilterPage):
     title: str | None = Field(None, min_length=3)
     description: str | None = None
     state: BooksStates | None = None
+    condition: BookCondition | None = None
     is_active: bool | None = None
     q: str | None = Field(
         None,
         min_length=1,
-        description='Título, ISBN, código interno, gênero, autor ou disponibilidade',
+        description='Título, ISBN, código interno, gênero, autor, disponibilidade ou conservação',
     )
     isbn: str | None = None
     internal_code: str | None = None

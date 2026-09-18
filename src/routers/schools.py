@@ -15,10 +15,11 @@ from src.schemas import (
     SchoolAdminCreateSchema,
     SchoolPublic,
     SchoolSchema,
+    SchoolSettingsUpdate,
     UserCreationPublic,
     UserPublic,
 )
-from src.security import get_current_active_super_admin
+from src.security import get_current_active_super_admin, get_current_user
 from src.services.account_activation import (
     first_access_url,
     generate_invitation,
@@ -35,6 +36,7 @@ router = APIRouter(prefix='/schools', tags=['schools'])
 
 Session = Annotated[AsyncSession, Depends(get_session)]
 SuperAdmin = Annotated[User, Depends(get_current_active_super_admin)]
+CurrentUser = Annotated[User, Depends(get_current_user)]
 settings = Settings()
 
 
@@ -163,6 +165,56 @@ async def get_school(
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='School not found'
         )
+    return school
+
+
+def _can_manage_school_settings(current_user: User, school_id: int) -> bool:
+    return current_user.role == UserRole.SUPER_ADMIN or (
+        current_user.role in {UserRole.SCHOOL_ADMIN, UserRole.LIBRARIAN}
+        and current_user.school_id == school_id
+    )
+
+
+@router.get('/{school_id}/settings', response_model=SchoolPublic)
+async def get_school_settings(
+    school_id: int,
+    session: Session,
+    current_user: CurrentUser,
+):
+    if current_user.role not in {
+        UserRole.SUPER_ADMIN, UserRole.SCHOOL_ADMIN, UserRole.LIBRARIAN
+    } or not _can_manage_school_settings(current_user, school_id):
+        raise HTTPException(status_code=HTTPStatus.FORBIDDEN)
+    school = await session.scalar(select(School).where(School.id == school_id))
+    if not school:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='School not found'
+        )
+    return school
+
+
+@router.patch('/{school_id}/settings', response_model=SchoolPublic)
+async def update_school_settings(
+    school_id: int,
+    settings_update: SchoolSettingsUpdate,
+    session: Session,
+    current_user: CurrentUser,
+):
+    if not _can_manage_school_settings(current_user, school_id):
+        raise HTTPException(status_code=HTTPStatus.FORBIDDEN)
+    school = await session.scalar(select(School).where(School.id == school_id))
+    if not school:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='School not found'
+        )
+    school.allow_student_condition_filter = (
+        settings_update.allow_student_condition_filter
+    )
+    school.allow_student_restricted_availability = (
+        settings_update.allow_student_restricted_availability
+    )
+    await session.commit()
+    await session.refresh(school)
     return school
 
 

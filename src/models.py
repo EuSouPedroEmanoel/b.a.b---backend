@@ -147,6 +147,12 @@ class School:
     name: Mapped[str] = mapped_column(nullable=False)
     code: Mapped[str] = mapped_column(unique=True, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    allow_student_condition_filter: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
+    allow_student_restricted_availability: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now()
     )
@@ -277,6 +283,18 @@ class User:
     @property
     def school_name(self) -> str | None:
         return self.school.name if self.school else None
+
+    @property
+    def school_allows_student_condition_filter(self) -> bool:
+        return bool(
+            self.school and self.school.allow_student_condition_filter
+        )
+
+    @property
+    def school_allows_student_restricted_availability(self) -> bool:
+        return bool(
+            self.school and self.school.allow_student_restricted_availability
+        )
 
     @property
     def administrative_capabilities(self) -> list[str]:

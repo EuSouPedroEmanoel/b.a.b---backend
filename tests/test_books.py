@@ -2,7 +2,13 @@ from http import HTTPStatus
 
 import pytest
 
-from src.models import BooksStates, LoanStatus, ReservationStatus
+from src.models import (
+    BookCondition,
+    BooksStates,
+    LoanStatus,
+    ReservationStatus,
+    School,
+)
 from src.schemas import BooksPublic
 from tests.factories import (
     BookCopyFactory,
@@ -457,6 +463,41 @@ async def test_student_book_state_filters_are_personal_and_hide_lost_archived(
     assert own_reserved.id in visible_ids
     assert lost.id not in visible_ids
     assert archived.id not in visible_ids
+
+
+@pytest.mark.asyncio
+async def test_student_catalog_school_settings_control_extra_filters(
+    session, student, client, student_token
+):
+    book = BookFactory(user_id=student.id)
+    session.add(book)
+    await session.commit()
+    session.add(
+        BookCopyFactory(
+            book_id=book.id,
+            added_by=student.id,
+            school_id=student.school_id,
+            condition=BookCondition.GOOD,
+            state=BooksStates.LOST,
+        )
+    )
+    school = await session.get(School, student.school_id)
+    await session.commit()
+
+    headers = {'Authorization': f'Bearer {student_token}'}
+    hidden_condition = client.get('/books/?q=Bom', headers=headers)
+    hidden_state = client.get('/books/?state=lost', headers=headers)
+    assert book.id not in [item['id'] for item in hidden_condition.json()['items']]
+    assert hidden_state.json()['items'] == []
+
+    school.allow_student_condition_filter = True
+    school.allow_student_restricted_availability = True
+    await session.commit()
+
+    visible_condition = client.get('/books/?q=Bom', headers=headers)
+    visible_state = client.get('/books/?state=lost', headers=headers)
+    assert book.id in [item['id'] for item in visible_condition.json()['items']]
+    assert book.id in [item['id'] for item in visible_state.json()['items']]
 
 
 def test_delete_book_error(client, super_admin_token):
@@ -1089,6 +1130,30 @@ async def test_list_books_filter_q_internal_code(session, client, user, token):
     )
     assert resp.status_code == HTTPStatus.OK
     assert book.id in [x['id'] for x in resp.json()['items']]
+
+
+@pytest.mark.asyncio
+async def test_list_books_filter_condition_and_condition_search(
+    session, client, user, token
+):
+    book = BookFactory(user_id=user.id)
+    session.add(book)
+    await session.commit()
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        condition=BookCondition.FAIR,
+    )
+    session.add(copy)
+    await session.commit()
+
+    headers = {'Authorization': f'Bearer {token}'}
+    filtered = client.get('/books/?condition=fair', headers=headers)
+    searched = client.get('/books/?q=Regular', headers=headers)
+
+    assert book.id in [item['id'] for item in filtered.json()['items']]
+    assert book.id in [item['id'] for item in searched.json()['items']]
 
 
 @pytest.mark.asyncio

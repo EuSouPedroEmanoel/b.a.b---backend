@@ -185,6 +185,27 @@ def test_delete_school_forbidden(client, token, school):
     assert resp.status_code == HTTPStatus.FORBIDDEN
 
 
+def test_school_student_catalog_settings(client, super_admin_token, school):
+    update = client.patch(
+        f'/schools/{school.id}/settings',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={
+            'allow_student_condition_filter': True,
+            'allow_student_restricted_availability': True,
+        },
+    )
+    assert update.status_code == HTTPStatus.OK
+    assert update.json()['allow_student_condition_filter'] is True
+    assert update.json()['allow_student_restricted_availability'] is True
+
+    settings = client.get(
+        f'/schools/{school.id}/settings',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+    )
+    assert settings.status_code == HTTPStatus.OK
+    assert settings.json()['allow_student_restricted_availability'] is True
+
+
 @pytest.mark.asyncio
 async def test_school_model_relationship(session, school, user):
     # cover School.users relationship via select
