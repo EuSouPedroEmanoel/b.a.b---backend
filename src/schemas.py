@@ -11,6 +11,7 @@ from pydantic import (
 )
 
 from src.models import (
+    AccountStatus,
     AdministrativeCapability,
     BookCondition,
     BooksStates,
@@ -159,6 +160,8 @@ class UserPublic(BaseModel):
     school_name: str | None = None
     school_code: str | None = None
     is_active: bool = True
+    account_status: AccountStatus = AccountStatus.ACTIVE
+    activated_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     administrative_capabilities: list[AdministrativeCapability] = []
@@ -178,6 +181,7 @@ class CurrentUserPublic(BaseModel):
     school_name: str | None = None
     school_code: str | None = None
     is_active: bool
+    account_status: AccountStatus
     administrative_capabilities: list[AdministrativeCapability] = []
 
     model_config = ConfigDict(from_attributes=True)
@@ -250,7 +254,6 @@ class StaffCreateSchema(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     email: EmailStr | None = None
     cpf: str
-    password: str
     role: UserRole = UserRole.LIBRARIAN
     school_id: int | None = None  # only honored for SUPER_ADMIN
 
@@ -301,17 +304,12 @@ def validate_birthdate(dt: date) -> date:
     return dt
 
 
-def initial_student_password(birthdate: date) -> str:
-    return birthdate.strftime('%d%m%Y')
-
-
 class StudentCreateSchema(BaseModel):
     name: str = Field(min_length=1)
     cpf: str
     birthdate: date
     turma_numero: int = Field(ge=1, le=12)
     turma_letra: str = Field(min_length=1, max_length=1)
-    password: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode='after')
     def validate_cpf_field(self):
@@ -325,19 +323,12 @@ class StudentCreateSchema(BaseModel):
         validate_birthdate(self.birthdate)
         return self
 
-    @model_validator(mode='after')
-    def default_password_from_birthdate(self):
-        if self.password is None:
-            self.password = initial_student_password(self.birthdate)
-        return self
-
 
 class SchoolAdminCreateSchema(BaseModel):
     username: str
     name: str | None = Field(default=None, min_length=1, max_length=120)
     email: EmailStr
     cpf: str
-    password: str
 
     @model_validator(mode='after')
     def default_name_from_username(self):
@@ -372,6 +363,43 @@ class UserUpdateSelf(BaseModel):
                 'turma_numero e turma_letra devem ser informados juntos'
             )
         return self
+
+
+class ActivationInvitationPublic(BaseModel):
+    code: str
+    expires_at: datetime
+    first_access_url: str
+    print_url: str
+
+
+class UserCreationPublic(UserPublic):
+    activation_invitation: ActivationInvitationPublic
+
+
+class ActivationCredentials(BaseModel):
+    username: str = Field(min_length=1, max_length=120)
+    code: str = Field(min_length=1, max_length=64)
+
+
+class ActivationValidatePublic(BaseModel):
+    valid: bool = True
+
+
+class ActivationComplete(ActivationCredentials):
+    password: str = Field(min_length=8, max_length=128)
+    password_confirmation: str = Field(min_length=8, max_length=128)
+
+    @model_validator(mode='after')
+    def validate_password_confirmation(self):
+        if self.password != self.password_confirmation:
+            raise ValueError('As senhas não coincidem')
+        return self
+
+
+class ActivationStatePublic(BaseModel):
+    account_status: AccountStatus
+    has_active_invitation: bool
+    expires_at: datetime | None = None
 
 
 # endregion

@@ -112,6 +112,12 @@ class UserRole(str, Enum):
     STUDENT = 'student'
 
 
+class AccountStatus(str, Enum):
+    PENDING_ACTIVATION = 'pending_activation'
+    ACTIVE = 'active'
+    DISABLED = 'disabled'
+
+
 class AdministrativeCapability(str, Enum):
     MANAGE_LIBRARY_CALENDAR = 'manage_library_calendar'
     MANAGE_CIRCULATION_RULES = 'manage_circulation_rules'
@@ -209,7 +215,7 @@ class User:
     turma_letra: Mapped[str | None] = mapped_column(
         kw_only=True, default=None, nullable=True
     )
-    password: Mapped[str] = mapped_column(nullable=True)
+    password: Mapped[str | None] = mapped_column(nullable=True)
     role: Mapped[UserRole] = mapped_column(
         SQLEnum(UserRole, values_callable=lambda x: [e.value for e in x]),
         kw_only=True,
@@ -220,6 +226,22 @@ class User:
         ForeignKey('schools.id'), kw_only=True, default=None, nullable=True
     )
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    account_status: Mapped[AccountStatus] = mapped_column(
+        SQLEnum(
+            AccountStatus,
+            values_callable=lambda x: [e.value for e in x],
+            name='accountstatus',
+        ),
+        kw_only=True,
+        default=AccountStatus.ACTIVE,
+        nullable=False,
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
+    )
+    auth_version: Mapped[int] = mapped_column(
+        kw_only=True, default=0, nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now()
     )
@@ -294,6 +316,84 @@ class UserAdministrativeCapability:
 
     user: Mapped[User] = relationship(
         init=False, back_populates='capability_assignments', lazy='selectin'
+    )
+
+
+@table_registry.mapped_as_dataclass()
+class AccountActivationToken:
+    __tablename__ = 'account_activation_tokens'
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True
+    )
+    code_hash: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    created_by: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    used_at: Mapped[datetime | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now()
+    )
+
+
+@table_registry.mapped_as_dataclass()
+class AccountActivationAttempt:
+    __tablename__ = 'account_activation_attempts'
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    username_hash: Mapped[bytes] = mapped_column(
+        LargeBinary(32), nullable=False, index=True
+    )
+    origin_hash: Mapped[bytes] = mapped_column(
+        LargeBinary(32), nullable=False, index=True
+    )
+    success: Mapped[bool] = mapped_column(nullable=False)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey('users.id', ondelete='SET NULL'),
+        kw_only=True,
+        default=None,
+        nullable=True,
+    )
+    event: Mapped[str] = mapped_column(String(40), default='validate')
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), index=True
+    )
+
+
+@table_registry.mapped_as_dataclass()
+class AccountActivationAudit:
+    __tablename__ = 'account_activation_audit'
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True
+    )
+    event: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_id: Mapped[int | None] = mapped_column(
+        ForeignKey('users.id', ondelete='SET NULL'),
+        kw_only=True,
+        default=None,
+        nullable=True,
+    )
+    origin_hash: Mapped[bytes | None] = mapped_column(
+        LargeBinary(32), kw_only=True, default=None, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), index=True
     )
 
 

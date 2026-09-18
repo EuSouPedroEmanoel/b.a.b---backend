@@ -623,7 +623,7 @@ def test_create_student(client, school, school_admin, school_admin_token):
     assert data['school_id'] == school_admin.school_id
 
 
-def test_create_student_default_password_is_birthdate(
+def test_create_student_requires_first_access_activation(
     client, school_admin_token
 ):
     resp = client.post(
@@ -640,14 +640,31 @@ def test_create_student_default_password_is_birthdate(
 
     assert resp.status_code == HTTPStatus.CREATED
     assert resp.json()['name'] == 'Maria'
-    username = resp.json()['username']
+    created = resp.json()
+    username = created['username']
 
     login = client.post(
         '/auth/token',
         data={'username': username, 'password': '10052015'},
     )
+    assert login.status_code == HTTPStatus.FORBIDDEN
+
+    activation = client.post(
+        '/account-activation/complete',
+        json={
+            'username': username,
+            'code': created['activation_invitation']['code'],
+            'password': 'NovaSenha123',
+            'password_confirmation': 'NovaSenha123',
+        },
+    )
+    assert activation.status_code == HTTPStatus.OK
+
+    login = client.post(
+        '/auth/token',
+        data={'username': username, 'password': 'NovaSenha123'},
+    )
     assert login.status_code == HTTPStatus.OK
-    assert 'access_token' in login.json()
 
 
 def test_create_student_invalid_cpf(client, school_admin_token):

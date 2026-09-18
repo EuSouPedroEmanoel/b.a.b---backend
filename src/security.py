@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.database import get_session
-from src.models import RevokedToken, School, User, UserRole
+from src.models import AccountStatus, RevokedToken, School, User, UserRole
 from src.settings import Settings
 
 pwd_context = PasswordHash.recommended()
@@ -88,10 +88,13 @@ def create_refresh_token(data: dict):
     return encoded, jti, expire
 
 
-def create_token_pair(username: str) -> tuple[str, str, str, datetime]:
+def create_token_pair(
+    username: str, auth_version: int = 0
+) -> tuple[str, str, str, datetime]:
     """Return (access_token, refresh_token, jti, refresh_expires_at)."""
-    access = create_access_token(data={'sub': username})
-    refresh, jti, exp = create_refresh_token(data={'sub': username})
+    claims = {'sub': username, 'auth_version': auth_version}
+    access = create_access_token(data=claims)
+    refresh, jti, exp = create_refresh_token(data=claims)
     return access, refresh, jti, exp
 
 
@@ -161,7 +164,11 @@ async def get_current_user(
     if not user:
         raise credential_exception
 
-    if not user.is_active:
+    if (
+        not user.is_active
+        or user.account_status != AccountStatus.ACTIVE
+        or payload.get('auth_version', 0) != user.auth_version
+    ):
         raise HTTPException(
             status_code=HTTPStatus.FORBIDDEN,
             detail='User is inactive',
@@ -256,6 +263,11 @@ async def get_refresh_user(
     user = await session.scalar(
         select(User).where(User.username == subject_username)
     )
-    if not user or not user.is_active:
+    if (
+        not user
+        or not user.is_active
+        or user.account_status != AccountStatus.ACTIVE
+        or payload.get('auth_version', 0) != user.auth_version
+    ):
         raise credential_exception
     return user

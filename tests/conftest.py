@@ -12,6 +12,10 @@ os.environ.setdefault('SECRET_KEY', 'test-secret-key-for-tests-1234567890')
 os.environ.setdefault(
     'CPF_HMAC_SECRET', 'test-cpf-hmac-secret-for-tests-32-bytes-minimum'
 )
+os.environ.setdefault(
+    'ACTIVATION_HMAC_SECRET',
+    'test-activation-hmac-secret-for-tests-32-bytes-minimum',
+)
 os.environ.setdefault('ALGORITHM', 'HS256')
 os.environ.setdefault('ACCESS_TOKEN_EXPIRE_MINUTES', '30')
 
@@ -62,7 +66,10 @@ def engine():
         'postgres:18',
         driver='psycopg',
     ) as postgres:
-        yield create_async_engine(postgres.get_connection_url())
+        yield create_async_engine(
+            postgres.get_connection_url(),
+            connect_args={'prepare_threshold': None},
+        )
 
 
 @pytest_asyncio.fixture

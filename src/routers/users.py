@@ -1,19 +1,27 @@
+from datetime import datetime
 from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
 from src.models import (
+    AccountActivationAudit,
+    AccountStatus,
     AdministrativeCapability,
     User,
     UserAdministrativeCapability,
     UserRole,
 )
+from src.routers.account_activation import invitation_print_document
 from src.schemas import (
+    ActivationCredentials,
+    ActivationInvitationPublic,
+    ActivationStatePublic,
     AdministrativeCapabilitiesPublic,
     AdministrativeCapabilitiesUpdate,
     CurrentUserPublic,
@@ -22,6 +30,7 @@ from src.schemas import (
     PaginatedResponse,
     StaffCreateSchema,
     StudentCreateSchema,
+    UserCreationPublic,
     UserPublic,
     UserUpdateSelf,
 )
@@ -30,6 +39,13 @@ from src.security import (
     get_current_user,
     get_password_hash,
 )
+from src.services.account_activation import (
+    active_invitation,
+    first_access_url,
+    generate_invitation,
+    verify_activation_hash,
+)
+from src.settings import Settings
 from src.utils.cpf import (
     classify_cpf_candidates,
     cpf_collision_guard,
@@ -55,6 +71,28 @@ StaffOnly = Annotated[
     ),
 ]
 UserReaders = StaffOnly
+settings = Settings()
+
+
+def _invitation_payload(
+    user_id: int,
+    username: str,
+    code: str,
+    expires_at,
+) -> ActivationInvitationPublic:
+    return ActivationInvitationPublic(
+        code=code,
+        expires_at=expires_at,
+        first_access_url=first_access_url(username, code),
+        print_url=f'/users/{user_id}/activation/print',
+    )
+
+
+def _can_manage_target(current_user: User, target: User) -> bool:
+    return current_user.role == UserRole.SUPER_ADMIN or (
+        current_user.role in {UserRole.SCHOOL_ADMIN, UserRole.LIBRARIAN}
+        and current_user.school_id == target.school_id
+    )
 
 
 async def _cpf_conflicts(
@@ -137,7 +175,9 @@ async def update_administrative_capabilities(
     }
 
 
-@router.post('/', status_code=HTTPStatus.CREATED, response_model=UserPublic)
+@router.post(
+    '/', status_code=HTTPStatus.CREATED, response_model=UserCreationPublic
+)
 async def create_user(
     user: StaffCreateSchema,
     session: Session,
@@ -160,7 +200,6 @@ async def create_user(
             )
         target_school_id = current_user.school_id
 
-    hashed = get_password_hash(user.password)
     lookup_hash, collision_guard, last2 = cpf_storage_values(user.cpf)
     if await _cpf_conflicts(
         session, lookup_hash, collision_guard, target_school_id
@@ -176,13 +215,18 @@ async def create_user(
         cpf_lookup_hash=lookup_hash,
         cpf_collision_guard=collision_guard,
         cpf_last2=last2,
-        password=hashed,
+        password=None,
         role=user.role,
         school_id=target_school_id,
+        account_status=AccountStatus.PENDING_ACTIVATION,
     )
     session.add(db_user)
 
     try:
+        await session.flush()
+        invitation, code = await generate_invitation(
+            session, db_user, current_user.id
+        )
         await session.commit()
     except IntegrityError:
         await session.rollback()
@@ -192,7 +236,12 @@ async def create_user(
         )
 
     await session.refresh(db_user)
-    return db_user
+    return {
+        **UserPublic.model_validate(db_user).model_dump(),
+        'activation_invitation': _invitation_payload(
+            db_user.id, db_user.username, code, invitation.expires_at
+        ),
+    }
 
 
 async def _make_unique_username(
@@ -222,7 +271,7 @@ async def _make_unique_username(
 @router.post(
     '/students',
     status_code=HTTPStatus.CREATED,
-    response_model=UserPublic,
+    response_model=UserCreationPublic,
 )
 async def create_student(
     payload: StudentCreateSchema,
@@ -253,7 +302,6 @@ async def create_student(
         )
 
     username = await _make_unique_username(session, payload.name, payload.cpf)
-    hashed = get_password_hash(payload.password)
     db_user = User(
         username=username,
         name=payload.name,
@@ -264,12 +312,17 @@ async def create_student(
         birthdate=payload.birthdate,
         turma_numero=payload.turma_numero,
         turma_letra=payload.turma_letra,
-        password=hashed,
+        password=None,
         role=UserRole.STUDENT,
         school_id=target_school_id,
+        account_status=AccountStatus.PENDING_ACTIVATION,
     )
     session.add(db_user)
     try:
+        await session.flush()
+        invitation, code = await generate_invitation(
+            session, db_user, current_user.id
+        )
         await session.commit()
     except IntegrityError:
         await session.rollback()
@@ -277,7 +330,12 @@ async def create_student(
             status_code=HTTPStatus.CONFLICT, detail='CPF already exists'
         )
     await session.refresh(db_user)
-    return db_user
+    return {
+        **UserPublic.model_validate(db_user).model_dump(),
+        'activation_invitation': _invitation_payload(
+            db_user.id, db_user.username, code, invitation.expires_at
+        ),
+    }
 
 
 @router.get(
@@ -331,6 +389,101 @@ async def read_users(
 @router.get('/me', status_code=HTTPStatus.OK, response_model=CurrentUserPublic)
 async def read_current_user(current_user: CurrentUser):
     return current_user
+
+
+async def _activation_target(
+    session: AsyncSession, user_id: int, current_user: User
+) -> User:
+    target = await session.scalar(select(User).where(User.id == user_id))
+    if target is None or not _can_manage_target(current_user, target):
+        raise HTTPException(HTTPStatus.NOT_FOUND, 'User Not Found...')
+    return target
+
+
+@router.get(
+    '/{user_id}/activation', response_model=ActivationStatePublic
+)
+async def read_activation_state(
+    user_id: int, session: Session, current_user: StaffOnly
+):
+    target = await _activation_target(session, user_id, current_user)
+    invitation = await active_invitation(session, target.id)
+    return {
+        'account_status': target.account_status,
+        'has_active_invitation': invitation is not None,
+        'expires_at': invitation.expires_at if invitation else None,
+    }
+
+
+@router.post(
+    '/{user_id}/activation/regenerate',
+    response_model=ActivationInvitationPublic,
+)
+async def regenerate_activation(
+    user_id: int, session: Session, current_user: StaffOnly
+):
+    target = await _activation_target(session, user_id, current_user)
+    if target.account_status != AccountStatus.PENDING_ACTIVATION:
+        raise HTTPException(
+            HTTPStatus.CONFLICT,
+            'Somente contas pendentes podem receber um novo convite.',
+        )
+    invitation, code = await generate_invitation(
+        session, target, current_user.id, event='reissued'
+    )
+    await session.commit()
+    return _invitation_payload(
+        target.id, target.username, code, invitation.expires_at
+    )
+
+
+@router.post(
+    '/{user_id}/activation/revoke', response_model=Message
+)
+async def revoke_activation(
+    user_id: int, session: Session, current_user: StaffOnly
+):
+    target = await _activation_target(session, user_id, current_user)
+    invitation = await active_invitation(session, target.id, for_update=True)
+    if invitation:
+        invitation.revoked_at = datetime.utcnow()
+        session.add(
+            AccountActivationAudit(
+                user_id=target.id,
+                actor_id=current_user.id,
+                event='revoked',
+            )
+        )
+        await session.commit()
+    return {'message': 'Convite revogado.'}
+
+
+@router.post(
+    '/{user_id}/activation/print', response_class=HTMLResponse
+)
+async def print_activation_invitation(
+    user_id: int,
+    payload: ActivationCredentials,
+    session: Session,
+    current_user: StaffOnly,
+):
+    target = await _activation_target(session, user_id, current_user)
+    invitation = await active_invitation(session, target.id)
+    if (
+        invitation is None
+        or payload.username != target.username
+        or not verify_activation_hash(payload.code, invitation.code_hash)
+    ):
+        raise HTTPException(
+            HTTPStatus.BAD_REQUEST,
+            'Não foi possível gerar o documento do convite.',
+        )
+    return invitation_print_document(
+        name=target.name,
+        username=target.username,
+        code=payload.code,
+        expires_at=invitation.expires_at,
+    )
 
 
 @router.get('/{user_id}', status_code=HTTPStatus.OK, response_model=UserPublic)
@@ -466,7 +619,12 @@ async def delete_user(
 
     # soft delete
     current_user.is_active = False
+    current_user.account_status = AccountStatus.DISABLED
+    current_user.auth_version += 1
     session.add(current_user)
     await session.commit()
 
     return {'message': 'User deactivated'}
+    ActivationCredentials,
+    ActivationInvitationPublic,
+    ActivationStatePublic,

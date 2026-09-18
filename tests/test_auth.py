@@ -44,6 +44,18 @@ def test_get_token_by_cpf(client, school, school_admin, school_admin_token):
         },
     )
     assert resp.status_code == HTTPStatus.CREATED
+    created = resp.json()
+
+    activation = client.post(
+        '/account-activation/complete',
+        json={
+            'username': created['username'],
+            'code': created['activation_invitation']['code'],
+            'password': 'S3cr3t!123',
+            'password_confirmation': 'S3cr3t!123',
+        },
+    )
+    assert activation.status_code == HTTPStatus.OK
 
     login = client.post(
         '/auth/token',

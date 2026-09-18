@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import StatementError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models import User, UserRole
+from src.models import AccountStatus, User, UserRole
 from tests.factories import BookCopyFactory, BookFactory
 
 
@@ -36,6 +36,9 @@ async def test_create_user(session: AsyncSession, mock_db_time):
         'role': UserRole.SUPER_ADMIN,
         'school_id': None,
         'is_active': True,
+        'account_status': AccountStatus.ACTIVE,
+        'activated_at': None,
+        'auth_version': 0,
         'school': None,
         'created_at': time,
         'updated_at': time,

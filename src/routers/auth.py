@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
 from src.limiter import limiter
-from src.models import RevokedToken, School, User
+from src.models import AccountStatus, RevokedToken, School, User
 from src.schemas import (
     GuestAccessRequest,
     GuestSchoolPublic,
@@ -106,18 +106,22 @@ async def login_for_access_token(
             status_code=HTTPStatus.UNAUTHORIZED,
             detail='Username or Password is wrong',
         )
-    if not user.is_active:
+    if not user.is_active or user.account_status != AccountStatus.ACTIVE:
         raise HTTPException(
             status_code=HTTPStatus.FORBIDDEN,
             detail='User is inactive',
         )
-    if not verify_password(form_data.password, user.password):
+    if not user.password or not verify_password(
+        form_data.password, user.password
+    ):
         raise HTTPException(
             status_code=HTTPStatus.UNAUTHORIZED,
             detail='Username or Password is wrong',
         )
 
-    access_token, refresh_token, _jti, _exp = create_token_pair(user.username)
+    access_token, refresh_token, _jti, _exp = create_token_pair(
+        user.username, user.auth_version
+    )
     return {
         'access_token': access_token,
         'refresh_token': refresh_token,
@@ -176,7 +180,12 @@ async def refresh_token_pair(
     session.add(RevokedToken(jti=jti, expires_at=expires_at))
 
     user = await session.scalar(select(User).where(User.username == sub))
-    if not user or not user.is_active:
+    if (
+        not user
+        or not user.is_active
+        or user.account_status != AccountStatus.ACTIVE
+        or decoded.get('auth_version', 0) != user.auth_version
+    ):
         await session.commit()
         raise HTTPException(
             status_code=HTTPStatus.UNAUTHORIZED,
@@ -184,7 +193,7 @@ async def refresh_token_pair(
         )
 
     access_token, new_refresh, _new_jti, _new_exp = create_token_pair(
-        user.username
+        user.username, user.auth_version
     )
     await session.commit()
     return {
@@ -198,7 +207,9 @@ async def refresh_token_pair(
 async def refresh_access_token(
     user: Annotated[User, Depends(get_current_user)],
 ):
-    new_access_token = create_access_token(data={'sub': user.username})
+    new_access_token = create_access_token(
+        data={'sub': user.username, 'auth_version': user.auth_version}
+    )
     return {'access_token': new_access_token, 'token_type': 'Bearer'}
 
 
