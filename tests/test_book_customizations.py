@@ -19,7 +19,6 @@ async def test_school_book_customizations_are_isolated_and_restorable(
     other_user = User(
         username='other-school-librarian',
         name='Other librarian',
-        email='other-school-librarian@example.com',
         password=get_password_hash(other_password),
         role=UserRole.LIBRARIAN,
         school_id=other_school.id,

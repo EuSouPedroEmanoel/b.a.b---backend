@@ -105,6 +105,12 @@ async def login_for_access_token(
             status_code=HTTPStatus.UNAUTHORIZED,
             detail='Username or Password is wrong',
         )
+    if user.school_id is not None and not await session.scalar(
+        select(School.is_active).where(School.id == user.school_id)
+    ):
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN, detail='School is inactive'
+        )
     if not user.is_active or user.account_status != AccountStatus.ACTIVE:
         raise HTTPException(
             status_code=HTTPStatus.FORBIDDEN,
@@ -189,6 +195,13 @@ async def refresh_token_pair(
         raise HTTPException(
             status_code=HTTPStatus.UNAUTHORIZED,
             detail='User not found or inactive',
+        )
+    if user.school_id is not None and not await session.scalar(
+        select(School.is_active).where(School.id == user.school_id)
+    ):
+        await session.commit()
+        raise HTTPException(
+            status_code=HTTPStatus.UNAUTHORIZED, detail='School is inactive'
         )
 
     access_token, new_refresh, _new_jti, _new_exp = create_token_pair(

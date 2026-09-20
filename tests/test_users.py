@@ -2,7 +2,7 @@ from http import HTTPStatus
 
 import pytest
 
-from src.models import User, UserRole
+from src.models import AccountStatus, User, UserRole
 from src.schemas import UserPublic
 from src.security import get_password_hash
 from src.utils.cpf import cpf_storage_values
@@ -26,12 +26,77 @@ def test_create_user(client, school, super_admin_token):
     assert response.status_code == HTTPStatus.CREATED
     assert response.json()['username'] == 'alice'
     assert response.json()['name'] == 'Alice Biblioteca'
-    assert response.json()['email'] == 'alice@exemple.com'
     assert response.json()['school_id'] == school.id
     assert response.json()['cpf_masked'] == '•••.•••.•••-35'
     assert 'cpf' not in response.json()
     assert 'cpf_lookup_hash' not in response.json()
     assert 'cpf_collision_guard' not in response.json()
+
+
+def test_deactivate_user_revokes_existing_session_and_can_be_undone(
+    client, token, other_user
+):
+    previous_token = client.post(
+        '/auth/token',
+        data={
+            'username': other_user.username,
+            'password': other_user.clean_password,
+        },
+    ).json()['access_token']
+    response = client.post(
+        f'/users/{other_user.id}/situation',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'is_active': False, 'justification': 'Afastamento administrativo.'},
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['is_active'] is False
+    assert client.get(
+        '/users/me', headers={'Authorization': f'Bearer {previous_token}'}
+    ).status_code == HTTPStatus.FORBIDDEN
+    response = client.post(
+        f'/users/{other_user.id}/situation/undo',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['is_active'] is True
+
+
+@pytest.mark.asyncio
+async def test_reactivation_preserves_pending_activation_status(
+    session, client, token, school
+):
+    pending = User(
+        username='pending-lifecycle',
+        name='Pending Lifecycle',
+        password=None,
+        role=UserRole.STUDENT,
+        school_id=school.id,
+        account_status=AccountStatus.PENDING_ACTIVATION,
+        is_active=True,
+    )
+    session.add(pending)
+    await session.commit()
+    deactivate = client.post(
+        f'/users/{pending.id}/situation',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'is_active': False, 'justification': 'Conta não iniciada.'},
+    )
+    assert deactivate.status_code == HTTPStatus.OK
+    assert deactivate.json()['account_status'] == 'disabled'
+    reactivate = client.post(
+        f'/users/{pending.id}/situation',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'is_active': True},
+    )
+    assert reactivate.status_code == HTTPStatus.OK
+    assert reactivate.json()['is_active'] is True
+    assert reactivate.json()['account_status'] == 'pending_activation'
+    history = client.get(
+        f'/users/{pending.id}/situation-audit',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert history.status_code == HTTPStatus.OK
+    assert history.json()[0]['previous_account_status'] == 'pending_activation'
 
 
 def test_simulated_lookup_collision_allows_second_student(
@@ -215,17 +280,13 @@ def test_read_current_user_rejects_invalid_and_missing_tokens(client):
     assert missing.json() == {'detail': 'Not authenticated'}
 
 
-def test_read_current_user_rejects_inactive_account(client, user, token):
-    deactivation = client.delete(
-        f'/users/{user.id}', headers={'Authorization': f'Bearer {token}'}
+def test_cannot_change_own_account_situation(client, user, token):
+    deactivation = client.post(
+        f'/users/{user.id}/situation',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'is_active': False, 'justification': 'Encerramento da conta.'},
     )
-    response = client.get(
-        '/users/me', headers={'Authorization': f'Bearer {token}'}
-    )
-
-    assert deactivation.status_code == HTTPStatus.OK
-    assert response.status_code == HTTPStatus.FORBIDDEN
-    assert response.json() == {'detail': 'User is inactive'}
+    assert deactivation.status_code == HTTPStatus.CONFLICT
 
 
 @pytest.mark.asyncio
@@ -234,7 +295,6 @@ async def test_read_users_filters_by_cpf_excludes_inactive_user(
 ):
     inactive = User(
         username='inactive_lookup',
-        email='inactive_lookup@example.com',
         cpf_lookup_hash=cpf_storage_values('52998224725')[0],
         cpf_collision_guard=cpf_storage_values('52998224725')[1],
         cpf_last2='25',
@@ -262,7 +322,6 @@ async def test_read_users_filters_by_cpf_returns_active_user(
 ):
     active = User(
         username='active_lookup',
-        email='active_lookup@example.com',
         cpf_lookup_hash=cpf_storage_values('39053344705')[0],
         cpf_collision_guard=cpf_storage_values('39053344705')[1],
         cpf_last2='05',
@@ -311,7 +370,6 @@ def test_update_user(client, user, token):
     data = response.json()
     assert data['username'] == 'Pedro'
     assert data['name'] == 'Pedro Silva'
-    assert data['email'] == 'pedro@email.ai'
     assert data['id'] == user.id
     assert data['role'] == user.role
     assert data['school_id'] == user.school_id
@@ -332,7 +390,6 @@ def test_super_admin_updates_school_admin(
 
     assert response.status_code == HTTPStatus.OK
     assert response.json()['name'] == 'Admin Atualizado'
-    assert response.json()['email'] == 'school-admin-updated@example.com'
     assert response.json()['role'] == UserRole.SCHOOL_ADMIN
 
 
@@ -387,8 +444,7 @@ def test_delete_user(client, user, token):
         headers={'Authorization': f'Bearer {token}'},
     )
 
-    assert response.status_code == HTTPStatus.OK
-    assert response.json() == {'message': 'User deactivated'}
+    assert response.status_code == HTTPStatus.METHOD_NOT_ALLOWED
 
 
 def test_raise_delete_user_forbidden(client, other_user, token):
@@ -397,7 +453,7 @@ def test_raise_delete_user_forbidden(client, other_user, token):
         headers={'Authorization': f'Bearer {token}'},
     )
 
-    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert response.status_code == HTTPStatus.METHOD_NOT_ALLOWED
 
 
 def test_raise_update_user_forbidden(client, other_user, token):
@@ -474,7 +530,6 @@ def test_list_users_without_school_forbidden(client):
 
     fake = User(
         username='noschool_users',
-        email='noschool_users@ex.com',
         password='h',
         role=UserRole.LIBRARIAN,
         school_id=None,
@@ -501,7 +556,6 @@ def test_read_user_by_id_cross_school_not_found(
 
     other_user = User(
         username='cross_school_user',
-        email='cross_school@ex.com',
         password=get_password_hash('secret'),
         role=UserRole.LIBRARIAN,
         school_id=other_school.id,
@@ -619,7 +673,6 @@ def test_create_student(client, school, school_admin, school_admin_token):
     assert data['birthdate'] == '2015-05-10'
     assert data['turma_numero'] == 7
     assert data['turma_letra'] == 'A'
-    assert data['email'] is None
     assert data['school_id'] == school_admin.school_id
 
 
@@ -729,7 +782,6 @@ def test_list_users_school_filter_super_admin(
     async def _add(school_id):
         u = User(
             username=f'filter_user_{school_id}',
-            email=f'filter_user_{school_id}@ex.com',
             password=get_password_hash('secret'),
             role=UserRole.LIBRARIAN,
             school_id=school_id,
@@ -762,7 +814,6 @@ def test_list_users_school_filter_ignored_for_school_admin(
 
     other = User(
         username='other_school_staff',
-        email='other_school_staff@ex.com',
         password=get_password_hash('secret'),
         role=UserRole.LIBRARIAN,
         school_id=other_school.id,

@@ -89,8 +89,12 @@ class CirculationPolicyUpdate(BaseModel):
     overdue_due_date_reduction_days: int = Field(default=1, ge=0, le=90)
     max_overdue_reductions: int = Field(default=14, ge=0, le=90)
     minimum_loan_days_after_penalties: int = Field(default=1, ge=1, le=90)
-    overdue_recovery_mode: Literal['on_time_returns', 'elapsed_days'] = 'on_time_returns'
-    overdue_recovery_on_time_returns: int | None = Field(default=3, ge=1, le=100)
+    overdue_recovery_mode: Literal['on_time_returns', 'elapsed_days'] = (
+        'on_time_returns'
+    )
+    overdue_recovery_on_time_returns: int | None = Field(
+        default=3, ge=1, le=100
+    )
     overdue_recovery_days: int | None = Field(default=None, ge=1, le=3650)
 
     @model_validator(mode='after')
@@ -126,7 +130,9 @@ class CirculationPoliciesUpdate(BaseModel):
             or set(roles) != expected
             or len(set(roles)) != expected_count
         ):
-            raise ValueError('Informe uma política para Aluno e outra para Professor')
+            raise ValueError(
+                'Informe uma política para Aluno e outra para Professor'
+            )
         return self
 
 
@@ -213,7 +219,9 @@ class NonWorkingDayRangeCreate(BaseModel):
     @model_validator(mode='after')
     def validate_range(self):
         if self.end_date < self.start_date:
-            raise ValueError('end_date deve ser posterior ou igual a start_date')
+            raise ValueError(
+                'end_date deve ser posterior ou igual a start_date'
+            )
         return self
 
 
@@ -431,6 +439,7 @@ class GenrePublic(BaseModel):
     id: int
     name: str
     slug: str
+    is_active: bool = True
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -445,6 +454,7 @@ class AuthorPublic(BaseModel):
     id: int
     name: str
     slug: str
+    is_active: bool = True
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -463,6 +473,10 @@ class SchoolSchema(BaseModel):
 class SchoolSettingsUpdate(BaseModel):
     allow_student_condition_filter: bool
     allow_student_restricted_availability: bool
+
+
+class SchoolSituationUpdate(BaseModel):
+    is_active: bool
 
 
 class SchoolPublic(SchoolSchema):
@@ -548,6 +562,7 @@ class FilterUser(FilterPage):
     role: UserRole | None = None
     school_id: int | None = None
     cpf: str | None = None
+    is_active: bool | None = None
 
     @model_validator(mode='after')
     def validate_cpf_field(self):
@@ -649,10 +664,11 @@ class BookCopyList(BaseModel):
 
 class BookCopyUpdate(BaseModel):
     code: str | None = None
-    state: BooksStates | None = None
     condition: BookCondition | None = None
     acquisition_date: date | None = None
     notes: str | None = None
+
+    model_config = ConfigDict(extra='forbid')
 
     @field_validator('code')
     @classmethod
@@ -663,6 +679,62 @@ class BookCopyUpdate(BaseModel):
         if not value or value[0].isdigit():
             raise ValueError('Código interno não pode começar com número')
         return value
+
+
+class CopySituationUpdate(BaseModel):
+    state: BooksStates
+    justification: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode='after')
+    def validate_lifecycle_change(self):
+        if self.state in {BooksStates.ARCHIVED, BooksStates.LOST}:
+            if not self.justification or not self.justification.strip():
+                raise ValueError('Justificativa é obrigatória.')
+            self.justification = self.justification.strip()
+        elif self.justification:
+            self.justification = self.justification.strip()
+        return self
+
+
+class UserSituationUpdate(BaseModel):
+    is_active: bool
+    justification: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode='after')
+    def validate_lifecycle_change(self):
+        if not self.is_active:
+            if not self.justification or not self.justification.strip():
+                raise ValueError('Justificativa é obrigatória.')
+            self.justification = self.justification.strip()
+        elif self.justification:
+            self.justification = self.justification.strip()
+        return self
+
+
+class CopySituationAuditPublic(BaseModel):
+    id: int
+    copy_id: int
+    previous_state: BooksStates
+    new_state: BooksStates
+    justification: str
+    actor_id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserSituationAuditPublic(BaseModel):
+    id: int
+    user_id: int
+    previous_active: bool
+    new_active: bool
+    previous_account_status: AccountStatus
+    new_account_status: AccountStatus
+    justification: str
+    actor_id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 # endregion

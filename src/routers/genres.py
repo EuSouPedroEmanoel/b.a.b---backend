@@ -8,7 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_session
 from src.models import Genre, UserRole
-from src.schemas import FilterPage, GenreCreate, GenrePublic, PaginatedResponse
+from src.schemas import (
+    FilterPage,
+    GenreCreate,
+    GenrePublic,
+    PaginatedResponse,
+    SchoolSituationUpdate,
+)
 from src.security import RoleChecker, get_current_user
 from src.utils.genres import display_name_genre, slugify_genre
 from src.utils.pagination import paginate
@@ -78,7 +84,7 @@ async def list_genres(
     filter_page: Annotated[FilterPage, Depends()],
     q: str | None = None,
 ):
-    sttm = select(Genre).order_by(Genre.name)
+    sttm = select(Genre).where(Genre.is_active.is_(True)).order_by(Genre.name)
     if q and q.strip():
         raw = q.strip()
         sttm = sttm.where(
@@ -150,6 +156,26 @@ async def delete_genre(genre_id: int, session: Session, user: StaffOnly):
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Genre not found'
         )
-    await session.delete(genre)
+    genre.is_active = False
+    session.add(genre)
     await session.commit()
-    return {'message': 'Genre deleted'}
+    return {'message': 'Genre deactivated'}
+
+
+@router.post('/{genre_id}/situation', response_model=GenrePublic)
+async def change_genre_situation(
+    genre_id: int,
+    payload: SchoolSituationUpdate,
+    session: Session,
+    user: StaffOnly,
+):
+    genre = await session.scalar(
+        select(Genre).where(Genre.id == genre_id).with_for_update()
+    )
+    if not genre:
+        raise HTTPException(HTTPStatus.NOT_FOUND, 'Genre not found')
+    genre.is_active = payload.is_active
+    session.add(genre)
+    await session.commit()
+    await session.refresh(genre)
+    return genre

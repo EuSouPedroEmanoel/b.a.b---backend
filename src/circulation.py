@@ -277,7 +277,7 @@ async def ensure_new_loan_allowed(
 ) -> None:
     """Validate limits and overdue-related restrictions for a locked reader."""
     now = _utc_now_naive()
-    open_statuses = [LoanStatus.ACTIVE, LoanStatus.OVERDUE]
+    open_statuses = [LoanStatus.ACTIVE]
     active_loans = await session.scalar(
         select(func.count(Loan.id)).where(
             Loan.user_id == borrower.id,

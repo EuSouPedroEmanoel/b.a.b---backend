@@ -16,6 +16,7 @@ from src.schemas import (
     SchoolPublic,
     SchoolSchema,
     SchoolSettingsUpdate,
+    SchoolSituationUpdate,
     UserCreationPublic,
     UserPublic,
 )
@@ -229,6 +230,37 @@ async def delete_school(
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='School not found'
         )
-    await session.delete(school)
+    if not school.is_active:
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT, detail='School is inactive'
+        )
+    school.is_active = False
+    session.add(school)
     await session.commit()
-    return {'message': 'School deleted'}
+    return {'message': 'School deactivated'}
+
+
+@router.post('/{school_id}/situation', response_model=SchoolPublic)
+async def change_school_situation(
+    school_id: int,
+    payload: SchoolSituationUpdate,
+    session: Session,
+    _: SuperAdmin,
+):
+    school = await session.scalar(
+        select(School).where(School.id == school_id).with_for_update()
+    )
+    if not school:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail='School not found'
+        )
+    if school.is_active == payload.is_active:
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT,
+            detail='School is already in this situation',
+        )
+    school.is_active = payload.is_active
+    session.add(school)
+    await session.commit()
+    await session.refresh(school)
+    return school

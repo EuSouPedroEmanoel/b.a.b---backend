@@ -126,7 +126,6 @@ class AdministrativeCapability(str, Enum):
 class LoanStatus(str, Enum):
     ACTIVE = 'active'
     RETURNED = 'returned'
-    OVERDUE = 'overdue'
 
 
 class ReservationStatus(str, Enum):
@@ -209,8 +208,7 @@ class User:
         String(120), kw_only=True, default='', nullable=False
     )
     cpf_lookup_hash: Mapped[bytes | None] = mapped_column(
-        LargeBinary(32), kw_only=True, default=None,
-        nullable=True
+        LargeBinary(32), kw_only=True, default=None, nullable=True
     )
     cpf_collision_guard: Mapped[bytes | None] = mapped_column(
         LargeBinary(32), kw_only=True, default=None, nullable=True
@@ -278,13 +276,13 @@ class User:
         lazy='selectin',
         foreign_keys='BookCopy.added_by',
     )
-    capability_assignments: Mapped[
-        list[UserAdministrativeCapability]
-    ] = relationship(
-        init=False,
-        back_populates='user',
-        cascade='all, delete-orphan',
-        lazy='selectin',
+    capability_assignments: Mapped[list[UserAdministrativeCapability]] = (
+        relationship(
+            init=False,
+            back_populates='user',
+            cascade='all, delete-orphan',
+            lazy='selectin',
+        )
     )
     reading_statuses: Mapped[list[UserReadingStatus]] = relationship(
         init=False,
@@ -305,9 +303,7 @@ class User:
 
     @property
     def school_allows_student_condition_filter(self) -> bool:
-        return bool(
-            self.school and self.school.allow_student_condition_filter
-        )
+        return bool(self.school and self.school.allow_student_condition_filter)
 
     @property
     def school_allows_student_restricted_availability(self) -> bool:
@@ -329,7 +325,8 @@ class UserAdministrativeCapability:
     __tablename__ = 'user_administrative_capabilities'
     __table_args__ = (
         UniqueConstraint(
-            'user_id', 'capability',
+            'user_id',
+            'capability',
             name='uq_user_administrative_capability',
         ),
         CheckConstraint(
@@ -621,6 +618,7 @@ class Genre:
     )
     name: Mapped[str] = mapped_column(String(80), nullable=False)
     slug: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now()
     )
@@ -645,6 +643,7 @@ class Author:
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     slug: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now()
     )
@@ -933,6 +932,58 @@ class BookCopy:
         lazy='selectin',
     )
     school: Mapped[School] = relationship(init=False, lazy='selectin')
+
+
+@table_registry.mapped_as_dataclass()
+class BookCopySituationAudit:
+    """Immutable, administrative lifecycle history for a physical copy."""
+
+    __tablename__ = 'book_copy_situation_audit'
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    copy_id: Mapped[int] = mapped_column(
+        ForeignKey('book_copies.id'), nullable=False, index=True
+    )
+    previous_state: Mapped[str] = mapped_column(String(20), nullable=False)
+    new_state: Mapped[str] = mapped_column(String(20), nullable=False)
+    justification: Mapped[str] = mapped_column(String(1000), nullable=False)
+    actor_id: Mapped[int] = mapped_column(
+        ForeignKey('users.id'), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), index=True
+    )
+
+
+@table_registry.mapped_as_dataclass()
+class UserSituationAudit:
+    """Immutable, administrative lifecycle history for an account."""
+
+    __tablename__ = 'user_situation_audit'
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey('users.id'), nullable=False, index=True
+    )
+    previous_active: Mapped[bool] = mapped_column(nullable=False)
+    new_active: Mapped[bool] = mapped_column(nullable=False)
+    previous_account_status: Mapped[str] = mapped_column(
+        String(40), nullable=False
+    )
+    new_account_status: Mapped[str] = mapped_column(
+        String(40), nullable=False
+    )
+    justification: Mapped[str] = mapped_column(String(1000), nullable=False)
+    actor_id: Mapped[int] = mapped_column(
+        ForeignKey('users.id'), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), index=True
+    )
 
 
 @table_registry.mapped_as_dataclass()

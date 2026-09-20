@@ -159,14 +159,15 @@ def test_delete_school_success(client, super_admin_token, school):
         headers={'Authorization': f'Bearer {super_admin_token}'},
     )
     assert resp.status_code == HTTPStatus.OK
-    assert resp.json()['message'] == 'School deleted'
+    assert resp.json()['message'] == 'School deactivated'
 
-    # confirm gone
+    # record remains queryable
     get = client.get(
         f'/schools/{school.id}',
         headers={'Authorization': f'Bearer {super_admin_token}'},
     )
-    assert get.status_code == HTTPStatus.NOT_FOUND
+    assert get.status_code == HTTPStatus.OK
+    assert get.json()['is_active'] is False
 
 
 def test_delete_school_not_found(client, super_admin_token):

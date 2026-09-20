@@ -15,7 +15,6 @@ async def test_create_user(session: AsyncSession, mock_db_time):
         new_user = User(
             username='test',
             name='Test User',
-            email='test@test',
             password='secret',
             role=UserRole.SUPER_ADMIN,
         )
@@ -31,7 +30,6 @@ async def test_create_user(session: AsyncSession, mock_db_time):
         'id': 1,
         'username': 'test',
         'name': 'Test User',
-        'email': 'test@test',
         'password': 'secret',
         'role': UserRole.SUPER_ADMIN,
         'school_id': None,
@@ -45,6 +43,8 @@ async def test_create_user(session: AsyncSession, mock_db_time):
         'books': [],
         'copies': [],
         'capability_assignments': [],
+        'reading_statuses': [],
+        'book_favorites': [],
         'cpf_lookup_hash': None,
         'cpf_collision_guard': None,
         'cpf_last2': None,

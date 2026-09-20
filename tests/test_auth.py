@@ -18,10 +18,10 @@ def test_get_token(client, user):
     assert token['refresh_token']
 
 
-def test_get_token_by_email(client, user):
+def test_get_token_by_username(client, user):
     response = client.post(
         '/auth/token',
-        data={'username': user.email, 'password': user.clean_password},
+        data={'username': user.username, 'password': user.clean_password},
     )
 
     assert response.status_code == HTTPStatus.OK

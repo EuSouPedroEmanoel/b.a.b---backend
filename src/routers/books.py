@@ -579,6 +579,11 @@ async def _get_or_create_genre_by_name(  # pragma: no cover
     slug = slugify_genre(name)
     existing = await session.scalar(select(Genre).where(Genre.slug == slug))
     if existing:
+        if not existing.is_active:
+            raise HTTPException(
+                status_code=HTTPStatus.CONFLICT,
+                detail='Genre is inactive',
+            )
         return existing
     genre = Genre(name=name, slug=slug)
     session.add(genre)
@@ -632,6 +637,11 @@ async def _resolve_genres_for_book(  # pragma: no cover
                     status_code=HTTPStatus.NOT_FOUND,
                     detail=f'Genre {gid} not found',
                 )
+            if not g.is_active:
+                raise HTTPException(
+                    status_code=HTTPStatus.CONFLICT,
+                    detail=f'Genre {gid} is inactive',
+                )
             if g.id not in seen_ids:
                 genres.append(g)
                 seen_ids.add(g.id)
@@ -660,6 +670,11 @@ async def _get_or_create_author_by_name(  # pragma: no cover
     slug = slugify_author(name)
     existing = await session.scalar(select(Author).where(Author.slug == slug))
     if existing:
+        if not existing.is_active:
+            raise HTTPException(
+                status_code=HTTPStatus.CONFLICT,
+                detail='Author is inactive',
+            )
         return existing
     author = Author(name=name, slug=slug)
     session.add(author)
@@ -710,6 +725,11 @@ async def _resolve_authors_for_book(  # pragma: no cover
                 raise HTTPException(
                     status_code=HTTPStatus.NOT_FOUND,
                     detail=f'Author {aid} not found',
+                )
+            if not a.is_active:
+                raise HTTPException(
+                    status_code=HTTPStatus.CONFLICT,
+                    detail=f'Author {aid} is inactive',
                 )
             if a.id not in seen_ids:
                 authors.append(a)
@@ -1143,13 +1163,19 @@ def _book_public(book: Book, effective=None) -> dict:
     genres_list = []
     for g in book.genres or []:
         try:
-            genres_list.append({'id': g.id, 'name': g.name, 'slug': g.slug})
+            genres_list.append({
+                'id': g.id, 'name': g.name, 'slug': g.slug,
+                'is_active': g.is_active,
+            })
         except Exception:
             genres_list.append(g)
     authors_list = []
     for a in book.authors or []:
         try:
-            authors_list.append({'id': a.id, 'name': a.name, 'slug': a.slug})
+            authors_list.append({
+                'id': a.id, 'name': a.name, 'slug': a.slug,
+                'is_active': a.is_active,
+            })
         except Exception:
             authors_list.append(a)
     return {
@@ -1492,10 +1518,7 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
                         & (BookCopy.school_id == user.school_id)
                         & (Loan.user_id == user.id)
                         & (Loan.school_id == user.school_id)
-                        & Loan.status.in_([
-                            LoanStatus.ACTIVE,
-                            LoanStatus.OVERDUE,
-                        ])
+                        & (Loan.status == LoanStatus.ACTIVE)
                     )
                 elif matched_state == BooksStates.RESERVED:
                     cond_avail_q = exists().where(
@@ -1613,10 +1636,7 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
             & (BookCopy.school_id == user.school_id)
             & (Loan.user_id == user.id)
             & (Loan.school_id == user.school_id)
-            & Loan.status.in_([
-                LoanStatus.ACTIVE,
-                LoanStatus.OVERDUE,
-            ])
+            & (Loan.status == LoanStatus.ACTIVE)
         )
         own_reservation = exists().where(
             (Reservation.book_id == Book.id)
@@ -2303,7 +2323,7 @@ async def get_book(
                 Loan.user_id == user.id,
                 Loan.school_id == user.school_id,
                 BookCopy.book_id == book.id,
-                Loan.status.in_([LoanStatus.ACTIVE, LoanStatus.OVERDUE]),
+                Loan.status == LoanStatus.ACTIVE,
             )
             .limit(1)
         ) is not None

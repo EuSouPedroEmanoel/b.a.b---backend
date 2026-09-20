@@ -173,6 +173,12 @@ async def get_current_user(
             status_code=HTTPStatus.FORBIDDEN,
             detail='User is inactive',
         )
+    if user.school_id is not None and not await session.scalar(
+        select(School.is_active).where(School.id == user.school_id)
+    ):
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN, detail='School is inactive'
+        )
 
     return user
 

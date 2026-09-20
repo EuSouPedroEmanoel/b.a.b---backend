@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,9 +15,11 @@ from src.models import (
     AccountStatus,
     AdministrativeCapability,
     PasswordResetUndo,
+    School,
     User,
     UserAdministrativeCapability,
     UserRole,
+    UserSituationAudit,
 )
 from src.routers.account_activation import invitation_print_document
 from src.schemas import (
@@ -35,6 +37,8 @@ from src.schemas import (
     StudentCreateSchema,
     UserCreationPublic,
     UserPublic,
+    UserSituationAuditPublic,
+    UserSituationUpdate,
     UserUpdateSelf,
 )
 from src.security import (
@@ -148,33 +152,35 @@ async def update_administrative_capabilities(
     if not allowed:
         raise HTTPException(HTTPStatus.FORBIDDEN, 'Not enough permissions')
 
-    current = (await session.scalars(
-        select(UserAdministrativeCapability).where(
-            UserAdministrativeCapability.user_id == target.id
+    current = (
+        await session.scalars(
+            select(UserAdministrativeCapability).where(
+                UserAdministrativeCapability.user_id == target.id
+            )
         )
-    )).all()
+    ).all()
     for assignment in current:
         await session.delete(assignment)
-    for capability, enabled in {
+    requested_capabilities = {
         AdministrativeCapability.MANAGE_LIBRARY_CALENDAR:
         payload.manage_library_calendar,
         AdministrativeCapability.MANAGE_CIRCULATION_RULES:
         payload.manage_circulation_rules,
-    }.items():
+    }
+    for capability, enabled in requested_capabilities.items():
         if enabled:
-            session.add(UserAdministrativeCapability(
-                user_id=target.id, capability=capability.value
-            ))
+            session.add(
+                UserAdministrativeCapability(
+                    user_id=target.id, capability=capability.value
+                )
+            )
     await session.commit()
     return {
         'user_id': target.id,
         'capabilities': [
-            capability for capability, enabled in {
-                AdministrativeCapability.MANAGE_LIBRARY_CALENDAR:
-                payload.manage_library_calendar,
-                AdministrativeCapability.MANAGE_CIRCULATION_RULES:
-                payload.manage_circulation_rules,
-            }.items() if enabled
+            capability
+            for capability, enabled in requested_capabilities.items()
+            if enabled
         ],
     }
 
@@ -203,6 +209,14 @@ async def create_user(
                 detail='User without school cannot create users',
             )
         target_school_id = current_user.school_id
+
+    school_is_active = await session.scalar(
+        select(School.is_active).where(School.id == target_school_id)
+    )
+    if not school_is_active:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST, detail='School is inactive'
+        )
 
     lookup_hash, collision_guard, last2 = cpf_storage_values(user.cpf)
     if await _cpf_conflicts(
@@ -304,6 +318,14 @@ async def create_student(
             )
         target_school_id = current_user.school_id
 
+    school_is_active = await session.scalar(
+        select(School.is_active).where(School.id == target_school_id)
+    )
+    if not school_is_active:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST, detail='School is inactive'
+        )
+
     lookup_hash, collision_guard, last2 = cpf_storage_values(payload.cpf)
     if await _cpf_conflicts(
         session, lookup_hash, collision_guard, target_school_id
@@ -376,12 +398,17 @@ async def read_users(
         sttm = sttm.where(User.role == filter_users.role)
 
     if filter_users.cpf is None:
-        sttm = sttm.where(User.is_active.is_(True))
+        if filter_users.is_active is not None:
+            sttm = sttm.where(User.is_active.is_(filter_users.is_active))
     else:
         sttm = sttm.where(
             User.cpf_lookup_hash == cpf_lookup_digest(filter_users.cpf),
             User.cpf_collision_guard == cpf_collision_guard(filter_users.cpf),
-            User.is_active.is_(True),
+            *(
+                [User.is_active.is_(filter_users.is_active)]
+                if filter_users.is_active is not None
+                else [User.is_active.is_(True)]
+            ),
         )
 
     items, total, page, size, pages = await paginate(
@@ -401,6 +428,163 @@ async def read_current_user(current_user: CurrentUser):
     return current_user
 
 
+async def _managed_status_target(
+    session: AsyncSession, user_id: int, current_user: User
+) -> User:
+    target = await session.scalar(
+        select(User).where(User.id == user_id).with_for_update()
+    )
+    if target is None or not _can_manage_target(current_user, target):
+        raise HTTPException(HTTPStatus.NOT_FOUND, 'User Not Found...')
+    if target.id == current_user.id:
+        raise HTTPException(
+            HTTPStatus.CONFLICT,
+            'Você não pode alterar a situação da sua própria conta.',
+        )
+    return target
+
+
+async def _ensure_not_last_administrator(
+    session: AsyncSession, target: User
+) -> None:
+    if target.role == UserRole.SUPER_ADMIN:
+        count = await session.scalar(
+            select(func.count(User.id)).where(
+                User.role == UserRole.SUPER_ADMIN, User.is_active.is_(True)
+            )
+        )
+        if count <= 1:
+            raise HTTPException(
+                HTTPStatus.CONFLICT,
+                'Não é possível desativar o último Super Admin ativo.',
+            )
+    elif target.role == UserRole.SCHOOL_ADMIN:
+        count = await session.scalar(
+            select(func.count(User.id)).where(
+                User.role == UserRole.SCHOOL_ADMIN,
+                User.school_id == target.school_id,
+                User.is_active.is_(True),
+            )
+        )
+        if count <= 1:
+            raise HTTPException(
+                HTTPStatus.CONFLICT,
+                'Não é possível desativar o último administrador ativo da '
+                'escola.',
+            )
+
+
+@router.post('/{user_id}/situation', response_model=UserPublic)
+async def change_user_situation(
+    user_id: int,
+    payload: UserSituationUpdate,
+    session: Session,
+    current_user: StaffOnly,
+):
+    target = await _managed_status_target(session, user_id, current_user)
+    if target.is_active == payload.is_active:
+        raise HTTPException(
+            HTTPStatus.CONFLICT, 'O usuário já está nessa situação.'
+        )
+    if not payload.is_active:
+        await _ensure_not_last_administrator(session, target)
+    previous_active = target.is_active
+    previous_account_status = target.account_status
+    restored_account_status = target.account_status
+    if payload.is_active:
+        last_audit = await session.scalar(
+            select(UserSituationAudit)
+            .where(UserSituationAudit.user_id == target.id)
+            .order_by(UserSituationAudit.id.desc())
+            .with_for_update()
+        )
+        if last_audit and not last_audit.new_active:
+            restored_account_status = AccountStatus(
+                last_audit.previous_account_status
+            )
+    target.is_active = payload.is_active
+    target.account_status = (
+        restored_account_status
+        if payload.is_active
+        else AccountStatus.DISABLED
+    )
+    # All currently issued access and refresh tokens become unusable.
+    target.auth_version += 1
+    session.add_all([
+        target,
+        UserSituationAudit(
+            user_id=target.id,
+            previous_active=previous_active,
+            new_active=target.is_active,
+            previous_account_status=previous_account_status.value,
+            new_account_status=target.account_status.value,
+            justification=payload.justification or 'Usuário reativado.',
+            actor_id=current_user.id,
+        ),
+    ])
+    await session.commit()
+    await session.refresh(target)
+    return target
+
+
+@router.post('/{user_id}/situation/undo', response_model=UserPublic)
+async def undo_user_situation(
+    user_id: int,
+    session: Session,
+    current_user: StaffOnly,
+):
+    target = await _managed_status_target(session, user_id, current_user)
+    audit = await session.scalar(
+        select(UserSituationAudit)
+        .where(UserSituationAudit.user_id == target.id)
+        .order_by(UserSituationAudit.id.desc())
+        .with_for_update()
+    )
+    if audit is None or target.is_active != audit.new_active:
+        raise HTTPException(
+            HTTPStatus.CONFLICT,
+            'Esta alteração não pode mais ser desfeita porque a situação '
+            'mudou novamente.',
+        )
+    if not audit.previous_active:
+        await _ensure_not_last_administrator(session, target)
+    previous_active = target.is_active
+    previous_account_status = target.account_status
+    target.is_active = audit.previous_active
+    target.account_status = AccountStatus(audit.previous_account_status)
+    target.auth_version += 1
+    session.add_all([
+        target,
+        UserSituationAudit(
+            user_id=target.id,
+            previous_active=previous_active,
+            new_active=target.is_active,
+            previous_account_status=previous_account_status.value,
+            new_account_status=target.account_status.value,
+            justification='Desfazer alteração de situação.',
+            actor_id=current_user.id,
+        ),
+    ])
+    await session.commit()
+    await session.refresh(target)
+    return target
+
+
+@router.get(
+    '/{user_id}/situation-audit',
+    response_model=list[UserSituationAuditPublic],
+)
+async def read_user_situation_audit(
+    user_id: int, session: Session, current_user: StaffOnly
+):
+    target = await _activation_target(session, user_id, current_user)
+    return list((await session.scalars(
+        select(UserSituationAudit)
+        .where(UserSituationAudit.user_id == target.id)
+        .order_by(UserSituationAudit.created_at, UserSituationAudit.id)
+    )).all())
+
+
 async def _activation_target(
     session: AsyncSession, user_id: int, current_user: User
 ) -> User:
@@ -410,9 +594,7 @@ async def _activation_target(
     return target
 
 
-@router.get(
-    '/{user_id}/activation', response_model=ActivationStatePublic
-)
+@router.get('/{user_id}/activation', response_model=ActivationStatePublic)
 async def read_activation_state(
     user_id: int, session: Session, current_user: StaffOnly
 ):
@@ -531,9 +713,9 @@ async def undo_password_reset(
     current_invitation.revoked_at = now
     if undo.previous_invitation_id is not None:
         previous_invitation = await session.scalar(
-            select(AccountActivationToken).where(
-                AccountActivationToken.id == undo.previous_invitation_id
-            ).with_for_update()
+            select(AccountActivationToken)
+            .where(AccountActivationToken.id == undo.previous_invitation_id)
+            .with_for_update()
         )
         if previous_invitation and previous_invitation.used_at is None:
             previous_invitation.revoked_at = None
@@ -558,9 +740,7 @@ async def undo_password_reset(
     return {'message': 'Reset de senha desfeito.'}
 
 
-@router.post(
-    '/{user_id}/activation/revoke', response_model=Message
-)
+@router.post('/{user_id}/activation/revoke', response_model=Message)
 async def revoke_activation(
     user_id: int, session: Session, current_user: StaffOnly
 ):
@@ -579,9 +759,7 @@ async def revoke_activation(
     return {'message': 'Convite revogado.'}
 
 
-@router.post(
-    '/{user_id}/activation/print', response_class=HTMLResponse
-)
+@router.post('/{user_id}/activation/print', response_class=HTMLResponse)
 async def print_activation_invitation(
     user_id: int,
     payload: ActivationCredentials,
@@ -614,7 +792,7 @@ async def read_user_by_id(
     sttm = select(User).where(User.id == user_id)
     user_db = await session.scalar(sttm)
 
-    if not user_db or not user_db.is_active:
+    if not user_db:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='User Not Found...'
         )
@@ -723,27 +901,3 @@ async def update_user(
 
     await session.refresh(target)
     return target
-
-
-@router.delete('/{user_id}', status_code=HTTPStatus.OK, response_model=Message)
-async def delete_user(
-    user_id: int,
-    session: Session,
-    current_user: CurrentUser,
-):
-    if user_id != current_user.id:
-        raise HTTPException(
-            status_code=HTTPStatus.FORBIDDEN, detail='Not enough permissions'
-        )
-
-    # soft delete
-    current_user.is_active = False
-    current_user.account_status = AccountStatus.DISABLED
-    current_user.auth_version += 1
-    session.add(current_user)
-    await session.commit()
-
-    return {'message': 'User deactivated'}
-    ActivationCredentials,
-    ActivationInvitationPublic,
-    ActivationStatePublic,

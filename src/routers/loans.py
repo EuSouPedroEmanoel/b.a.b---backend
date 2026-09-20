@@ -24,6 +24,7 @@ from src.models import (
     ReadingStatus,
     Reservation,
     ReservationStatus,
+    School,
     User,
     UserReadingStatus,
     UserRole,
@@ -63,7 +64,7 @@ def _apply_situation_filter(query, situation):
     if not situation:
         return query
 
-    open_statuses = [LoanStatus.ACTIVE, LoanStatus.OVERDUE]
+    open_statuses = [LoanStatus.ACTIVE]
     query = query.where(Loan.status.in_(open_statuses))
     if situation == 'borrowed':
         return query
@@ -229,6 +230,12 @@ async def create_loan(
     copy, school_id = await _resolve_copy(
         payload, session, current_user, for_update=True
     )
+    if not await session.scalar(
+        select(School.is_active).where(School.id == school_id)
+    ):
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST, detail='School is inactive'
+        )
     reservation = None
     if payload.reservation_id is not None:
         reservation = await session.scalar(
@@ -483,7 +490,7 @@ async def list_loans(
 
     query = query.order_by(
         case(
-            (Loan.status.in_([LoanStatus.ACTIVE, LoanStatus.OVERDUE]), 0),
+            (Loan.status == LoanStatus.ACTIVE, 0),
             else_=1,
         ),
         Loan.borrowed_at.desc(),
@@ -513,7 +520,7 @@ async def list_my_loans(
     query = _apply_situation_filter(query, loan_filter.situation)
     query = query.order_by(
         case(
-            (Loan.status.in_([LoanStatus.ACTIVE, LoanStatus.OVERDUE]), 0),
+            (Loan.status == LoanStatus.ACTIVE, 0),
             else_=1,
         ),
         Loan.borrowed_at.desc(),

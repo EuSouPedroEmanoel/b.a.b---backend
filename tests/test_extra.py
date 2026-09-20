@@ -3,21 +3,11 @@ from http import HTTPStatus
 import pytest
 
 
-def test_soft_delete_user_hides_from_list_and_login(client, user, token):
-    # delete self
+def test_legacy_user_delete_endpoint_is_removed(client, user, token):
     resp = client.delete(
         f'/users/{user.id}', headers={'Authorization': f'Bearer {token}'}
     )
-    assert resp.status_code == HTTPStatus.OK
-    # An inactive account can no longer use the access token.
-    resp2 = client.get('/users/', headers={'Authorization': f'Bearer {token}'})
-    assert resp2.status_code == HTTPStatus.FORBIDDEN
-    # login should fail for inactive user
-    resp3 = client.post(
-        '/auth/token',
-        data={'username': user.username, 'password': user.clean_password},
-    )
-    assert resp3.status_code == HTTPStatus.FORBIDDEN
+    assert resp.status_code == HTTPStatus.METHOD_NOT_ALLOWED
 
 
 @pytest.mark.asyncio

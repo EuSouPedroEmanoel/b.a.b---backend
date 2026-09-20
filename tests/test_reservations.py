@@ -642,7 +642,6 @@ def test_create_reservation_without_school_forbidden(client, book):
 
     fake = User(
         username='noschool_res',
-        email='noschool_res@ex.com',
         password='h',
         role=UserRole.STUDENT,
         school_id=None,
@@ -816,7 +815,6 @@ def test_list_reservations_without_school_forbidden(client):
 
     fake = User(
         username='noschool_res_list',
-        email='noschool_res_list@ex.com',
         password='h',
         role=UserRole.LIBRARIAN,
         school_id=None,

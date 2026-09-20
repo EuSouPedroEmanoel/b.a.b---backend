@@ -126,11 +126,21 @@ async def resolve_one(
 def public_book(book: EffectiveBook, guest: bool = False) -> dict:
     base = book.base
     genres = [
-        {'id': item.id, 'name': item.name, 'slug': item.slug}
+        {
+            'id': item.id,
+            'name': item.name,
+            'slug': item.slug,
+            'is_active': item.is_active,
+        }
         for item in book.genres
     ]
     authors = [
-        {'id': item.id, 'name': item.name, 'slug': item.slug}
+        {
+            'id': item.id,
+            'name': item.name,
+            'slug': item.slug,
+            'is_active': item.is_active,
+        }
         for item in book.authors
     ]
     payload = {

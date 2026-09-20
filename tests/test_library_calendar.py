@@ -178,7 +178,6 @@ async def test_school_admin_cannot_delete_other_school_calendar_day(
     other_admin = User(
         username='calendar_other_school_admin',
         name='Calendar Other School Admin',
-        email='calendar_other_school_admin@example.com',
         password=get_password_hash('other-school-password'),
         role=UserRole.SCHOOL_ADMIN,
         school_id=other_school.id,

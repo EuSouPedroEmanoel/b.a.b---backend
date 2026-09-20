@@ -34,6 +34,68 @@ def test_create_book_copy(client, token, book, user):
     assert data['edited_by'] is None
 
 
+@pytest.mark.asyncio
+async def test_archive_copy_requires_justification_and_can_be_undone(
+    session, client, token, user, book
+):
+    copy = BookCopyFactory(
+        book_id=book.id, user_id=user.id, school_id=user.school_id
+    )
+    session.add(copy)
+    await session.commit()
+    response = client.post(
+        f'/copies/{copy.id}/situation',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'state': 'archived'},
+    )
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    response = client.post(
+        f'/copies/{copy.id}/situation',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'state': 'archived', 'justification': 'Exemplar danificado.'},
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['state'] == 'archived'
+    response = client.post(
+        f'/copies/{copy.id}/situation/undo',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['state'] == 'available'
+
+
+@pytest.mark.asyncio
+async def test_copy_situation_audit_is_chronological_and_scoped(
+    session, client, token, user, book
+):
+    copy = BookCopyFactory(
+        book_id=book.id, user_id=user.id, school_id=user.school_id
+    )
+    session.add(copy)
+    await session.commit()
+    archive = client.post(
+        f'/copies/{copy.id}/situation',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'state': 'archived', 'justification': 'Fim de circulação.'},
+    )
+    assert archive.status_code == HTTPStatus.OK
+    restore = client.post(
+        f'/copies/{copy.id}/situation',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'state': 'available'},
+    )
+    assert restore.status_code == HTTPStatus.OK
+    audit = client.get(
+        f'/copies/{copy.id}/situation-audit',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert audit.status_code == HTTPStatus.OK
+    assert [item['new_state'] for item in audit.json()] == [
+        'archived', 'available'
+    ]
+    assert all(item['actor_id'] == user.id for item in audit.json())
+
+
 def test_create_book_copy_rejects_numeric_code(client, token, book):
     response = client.post(
         f'/books/{book.id}/copies/',
@@ -339,12 +401,19 @@ async def test_patch_copy(session, client, user, token, book):
         json={'state': 'borrowed', 'notes': 'Emprestado para Maria'},
     )
 
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+    response = client.patch(
+        f'/copies/{copy.id}',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'notes': 'Exemplar revisado'},
+    )
     assert response.status_code == HTTPStatus.OK
-    assert response.json()['state'] == 'borrowed'
-    assert response.json()['notes'] == 'Emprestado para Maria'
+    assert response.json()['state'] == 'available'
+    assert response.json()['notes'] == 'Exemplar revisado'
     persisted = await session.scalar(select(BookCopy).where(BookCopy.id == copy.id))
-    assert persisted.state == BooksStates.BORROWED
-    assert persisted.notes == 'Emprestado para Maria'
+    assert persisted.state == BooksStates.AVAILABLE
+    assert persisted.notes == 'Exemplar revisado'
 
 
 def test_patch_copy_error(client, token):
@@ -374,11 +443,10 @@ async def test_delete_copy(session, client, user, token, book):
         headers={'Authorization': f'Bearer {token}'},
     )
 
-    assert response.status_code == HTTPStatus.OK
-    assert response.json() == {
-        'message': 'Copy has been deleted successfully.'
-    }
-    assert await session.scalar(select(BookCopy).where(BookCopy.id == copy.id)) is None
+    assert response.status_code == HTTPStatus.METHOD_NOT_ALLOWED
+    assert await session.scalar(
+        select(BookCopy).where(BookCopy.id == copy.id)
+    ) is not None
 
 
 def test_delete_copy_error(client, token):
@@ -386,8 +454,7 @@ def test_delete_copy_error(client, token):
         '/copies/10', headers={'Authorization': f'Bearer {token}'}
     )
 
-    assert response.status_code == HTTPStatus.NOT_FOUND
-    assert response.json() == {'detail': 'Copy not found.'}
+    assert response.status_code == HTTPStatus.METHOD_NOT_ALLOWED
 
 
 @pytest.mark.asyncio
@@ -419,7 +486,6 @@ async def test_same_code_different_schools_allowed(
     other_user_pw = 'testteste'
     other_user2 = User(
         username='other_school_user_tmp',
-        email='other_school_tmp@exemplo.com',
         password=get_password_hash(other_user_pw),
         role=UserRole.LIBRARIAN,
         school_id=other_school.id,
@@ -461,7 +527,6 @@ def test_list_copies_without_school_forbidden(client):
 
     fake_user = User(
         username='noschool_copy',
-        email='noschool_copy@ex.com',
         password='hashed',
         role=UserRole.LIBRARIAN,
         school_id=None,
@@ -513,8 +578,7 @@ async def test_super_admin_cannot_delete_copy_async(
         f'/copies/{copy.id}',
         headers={'Authorization': f'Bearer {super_admin_token}'},
     )
-    assert resp.status_code == HTTPStatus.FORBIDDEN
-    assert 'SUPER_ADMIN cannot delete' in resp.json()['detail']
+    assert resp.status_code == HTTPStatus.METHOD_NOT_ALLOWED
 
 
 def test_patch_copy_without_school_forbidden(client, book):
@@ -524,7 +588,6 @@ def test_patch_copy_without_school_forbidden(client, book):
 
     fake_user = User(
         username='noschool_patch',
-        email='noschool_patch@ex.com',
         password='hashed',
         role=UserRole.LIBRARIAN,
         school_id=None,
@@ -555,7 +618,6 @@ def test_delete_copy_without_school_forbidden(client):
 
     fake_user = User(
         username='noschool_del',
-        email='noschool_del@ex.com',
         password='hashed',
         role=UserRole.LIBRARIAN,
         school_id=None,
@@ -571,6 +633,6 @@ def test_delete_copy_without_school_forbidden(client):
         resp = client.delete(
             '/copies/1', headers={'Authorization': 'Bearer fake'}
         )
-        assert resp.status_code == HTTPStatus.FORBIDDEN
+        assert resp.status_code == HTTPStatus.METHOD_NOT_ALLOWED
     finally:
         app.dependency_overrides.clear()

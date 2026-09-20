@@ -709,7 +709,6 @@ def test_create_copy_without_school_via_override(
 
     fake_user = User(
         username='noschool_lib',
-        email='noschool@ex.com',
         password='hashed',
         role=UserRole.LIBRARIAN,
         school_id=None,
@@ -776,7 +775,6 @@ def test_list_books_without_school_forbidden(client, book):
 
     fake_user = User(
         username='noschool2',
-        email='noschool2@ex.com',
         password='hashed',
         role=UserRole.LIBRARIAN,
         school_id=None,
@@ -970,7 +968,6 @@ def test_resolve_book_without_school_forbidden(client, book):
 
     fake_user = User(
         username='noschool3',
-        email='noschool3@ex.com',
         password='h',
         role=UserRole.LIBRARIAN,
         school_id=None,
@@ -1047,7 +1044,6 @@ def test_suggest_books_without_school_forbidden(client, book):
 
     fake_user = User(
         username='noschool4',
-        email='noschool4@ex.com',
         password='h',
         role=UserRole.LIBRARIAN,
         school_id=None,
@@ -1254,7 +1250,6 @@ def test_get_book_without_school_forbidden(client, book):
 
     fake_user = User(
         username='noschool5',
-        email='noschool5@ex.com',
         password='h',
         role=UserRole.LIBRARIAN,
         school_id=None,

@@ -13,6 +13,7 @@ from src.schemas import (
     AuthorPublic,
     FilterPage,
     PaginatedResponse,
+    SchoolSituationUpdate,
 )
 from src.security import RoleChecker, get_current_user
 from src.utils.authors import display_name_author, slugify_author
@@ -85,7 +86,9 @@ async def list_authors(
     filter_page: Annotated[FilterPage, Depends()],
     q: str | None = None,
 ):
-    sttm = select(Author).order_by(Author.name)
+    sttm = (
+        select(Author).where(Author.is_active.is_(True)).order_by(Author.name)
+    )
     if q and q.strip():
         raw = q.strip()
         sttm = sttm.where(
@@ -154,6 +157,26 @@ async def delete_author(author_id: int, session: Session, user: StaffOnly):
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='Author not found'
         )
-    await session.delete(author)
+    author.is_active = False
+    session.add(author)
     await session.commit()
-    return {'message': 'Author deleted'}
+    return {'message': 'Author deactivated'}
+
+
+@router.post('/{author_id}/situation', response_model=AuthorPublic)
+async def change_author_situation(
+    author_id: int,
+    payload: SchoolSituationUpdate,
+    session: Session,
+    user: StaffOnly,
+):
+    author = await session.scalar(
+        select(Author).where(Author.id == author_id).with_for_update()
+    )
+    if not author:
+        raise HTTPException(HTTPStatus.NOT_FOUND, 'Author not found')
+    author.is_active = payload.is_active
+    session.add(author)
+    await session.commit()
+    await session.refresh(author)
+    return author

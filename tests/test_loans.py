@@ -143,7 +143,6 @@ async def test_super_admin_cannot_create_loan_with_internal_code(
     )
     borrower = User(
         username='duplicate_code_borrower',
-        email='duplicate_code_borrower@example.com',
         cpf_lookup_hash=cpf_storage_values('39053344705')[0],
         cpf_collision_guard=cpf_storage_values('39053344705')[1],
         cpf_last2='05',
@@ -291,7 +290,6 @@ async def test_create_loan_borrower_wrong_school(
     # borrower from other school
     other_borrower = User(
         username='other_borrower',
-        email='other_borrower@ex.com',
         password=get_password_hash('secret'),
         role=UserRole.STUDENT,
         school_id=other_school.id,
@@ -918,7 +916,6 @@ async def test_create_loan_cross_school_copy_not_found(
 
     borrower = User(
         username='borrower_cross',
-        email='borrower_cross@ex.com',
         password=get_password_hash('secret'),
         role=UserRole.STUDENT,
         school_id=user.school_id,
@@ -941,7 +938,6 @@ def test_create_loan_without_school_forbidden(client, book):
 
     fake = User(
         username='noschool_loan',
-        email='noschool_loan@ex.com',
         password='h',
         role=UserRole.LIBRARIAN,
         school_id=None,
@@ -1007,7 +1003,6 @@ async def test_return_loan_cross_school_not_found(
 
     other_user = User(
         username='other_librarian_cross',
-        email='other_cross@ex.com',
         password=get_password_hash('secret'),
         role=UserRole.LIBRARIAN,
         school_id=other_school.id,
@@ -1220,7 +1215,6 @@ async def test_list_loans_super_admin_filters(
 
     student2 = User(
         username='student2_loans',
-        email='student2@ex.com',
         password=get_password_hash('secret'),
         role=UserRole.STUDENT,
         school_id=student.school_id,
@@ -1306,7 +1300,6 @@ async def test_list_loans_librarian_filters(
 
     student2 = User(
         username='stud_lib_filt',
-        email='stud_lib_filt@ex.com',
         password=get_password_hash('secret'),
         role=UserRole.STUDENT,
         school_id=user.school_id,
@@ -1404,7 +1397,6 @@ def test_list_loans_without_school_forbidden(client):
 
     fake = User(
         username='noschool_loans_list',
-        email='noschool_loans@ex.com',
         password='h',
         role=UserRole.LIBRARIAN,
         school_id=None,
@@ -1538,7 +1530,6 @@ async def test_get_loan_cross_school_not_found(
 
     other_user = User(
         username='other_get_loan',
-        email='other_get@ex.com',
         password=get_password_hash('secret'),
         role=UserRole.LIBRARIAN,
         school_id=other_school.id,

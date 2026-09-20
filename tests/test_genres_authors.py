@@ -84,7 +84,12 @@ def test_delete_genre_success(client, super_admin_token):
     gid = create.json()['id']
     delete = client.delete(f'/genres/{gid}', headers={'Authorization': f'Bearer {super_admin_token}'})
     assert delete.status_code == HTTPStatus.OK
-    assert client.get(f'/genres/{gid}', headers={'Authorization': f'Bearer {super_admin_token}'}).status_code == HTTPStatus.NOT_FOUND
+    restored = client.get(
+        f'/genres/{gid}',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+    )
+    assert restored.status_code == HTTPStatus.OK
+    assert restored.json()['is_active'] is False
 
 
 def test_list_authors_empty(client, token):
@@ -142,7 +147,12 @@ def test_delete_author_success(client, super_admin_token):
     aid = create.json()['id']
     delete = client.delete(f'/authors/{aid}', headers={'Authorization': f'Bearer {super_admin_token}'})
     assert delete.status_code == HTTPStatus.OK
-    assert client.get(f'/authors/{aid}', headers={'Authorization': f'Bearer {super_admin_token}'}).status_code == HTTPStatus.NOT_FOUND
+    restored = client.get(
+        f'/authors/{aid}',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+    )
+    assert restored.status_code == HTTPStatus.OK
+    assert restored.json()['is_active'] is False
 
 
 def test_book_create_with_genre_author_names(client, token):
