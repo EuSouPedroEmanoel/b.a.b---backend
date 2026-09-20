@@ -482,6 +482,11 @@ class SchoolNonWorkingDay:
         ForeignKey('schools.id', ondelete='CASCADE'), nullable=False
     )
     date: Mapped[date] = mapped_column(nullable=False)
+    # Retained for compatibility with databases created before the calendar
+    # description was removed from the active domain model.
+    description: Mapped[str | None] = mapped_column(
+        kw_only=True, default=None, nullable=True, init=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now()
     )
@@ -612,6 +617,10 @@ class CirculationPolicy:
 @table_registry.mapped_as_dataclass()
 class Genre:
     __tablename__ = 'genres'
+    __table_args__ = (
+        Index('ix_genres_slug', 'slug'),
+        Index('ix_genres_name', 'name'),
+    )
 
     id: Mapped[int] = mapped_column(
         init=False, primary_key=True, autoincrement=True
@@ -637,6 +646,10 @@ class Genre:
 @table_registry.mapped_as_dataclass()
 class Author:
     __tablename__ = 'authors'
+    __table_args__ = (
+        Index('ix_authors_slug', 'slug'),
+        Index('ix_authors_name', 'name'),
+    )
 
     id: Mapped[int] = mapped_column(
         init=False, primary_key=True, autoincrement=True
@@ -1054,6 +1067,12 @@ class Loan:
 class Reservation:
     __tablename__ = 'reservations'
     __table_args__ = (
+        Index(
+            'uq_reservations_ready_copy',
+            'copy_id',
+            unique=True,
+            postgresql_where=text("status = 'ready'"),
+        ),
         Index(
             'uq_reservations_active_user_book_school',
             'user_id',
