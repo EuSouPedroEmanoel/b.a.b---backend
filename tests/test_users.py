@@ -737,6 +737,42 @@ def test_create_student_invalid_cpf(client, school_admin_token):
     assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
+def test_create_user_rejects_invalid_student_turma_letter(
+    client, school, super_admin_token
+):
+    response = client.post(
+        '/users/',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={
+            'name': 'Turma inválida',
+            'cpf': '39053344705',
+            'birthdate': '2015-01-01',
+            'turma_numero': 7,
+            'turma_letra': '1',
+            'role': 'student',
+            'school_id': school.id,
+        },
+    )
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+def test_create_staff_rejects_username_longer_than_activation_contract(
+    client, school, super_admin_token
+):
+    response = client.post(
+        '/users/',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={
+            'username': 'u' * 121,
+            'name': 'Usuário longo',
+            'cpf': '39053344705',
+            'role': 'teacher',
+            'school_id': school.id,
+        },
+    )
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
 def test_create_student_duplicate_cpf(client, school_admin_token):
     payload = {
         'name': 'Ana',

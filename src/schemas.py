@@ -259,14 +259,16 @@ class AdministrativeCapabilitiesPublic(BaseModel):
 
 
 class StaffCreateSchema(BaseModel):
-    username: str | None = None
+    username: str | None = Field(default=None, min_length=1, max_length=120)
     name: str | None = Field(default=None, min_length=1, max_length=120)
     cpf: str
     role: UserRole = UserRole.LIBRARIAN
     school_id: int | None = None  # only honored for SUPER_ADMIN
     birthdate: date | None = None
     turma_numero: int | None = Field(default=None, ge=1, le=12)
-    turma_letra: str | None = Field(default=None, min_length=1, max_length=1)
+    turma_letra: str | None = Field(
+        default=None, min_length=1, max_length=1, pattern=r'[A-Za-z]'
+    )
 
     @model_validator(mode='after')
     def default_name_from_username(self):
@@ -334,11 +336,11 @@ def validate_birthdate(dt: date) -> date:
 
 
 class StudentCreateSchema(BaseModel):
-    name: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=120)
     cpf: str
     birthdate: date
     turma_numero: int = Field(ge=1, le=12)
-    turma_letra: str = Field(min_length=1, max_length=1)
+    turma_letra: str = Field(min_length=1, max_length=1, pattern=r'[A-Za-z]')
 
     @model_validator(mode='after')
     def validate_cpf_field(self):
@@ -354,7 +356,7 @@ class StudentCreateSchema(BaseModel):
 
 
 class SchoolAdminCreateSchema(BaseModel):
-    username: str
+    username: str = Field(min_length=1, max_length=120)
     name: str | None = Field(default=None, min_length=1, max_length=120)
     cpf: str
 
