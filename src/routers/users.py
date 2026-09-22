@@ -950,7 +950,7 @@ async def update_user(
             summary=(
                 f'Informações administrativas de {target.name} atualizadas.'
             ),
-            changed_fields=list(data),
+            changed_fields={'fields': list(data)},
         )
 
     try:

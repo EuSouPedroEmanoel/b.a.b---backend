@@ -2464,7 +2464,7 @@ async def _apply_global_book_update(
         entity_type='book',
         entity_id=db_book.id,
         summary=f'Livro "{db_book.title}" atualizado no catálogo global.',
-        changed_fields=list(data),
+        changed_fields={'fields': list(data)},
     )
     await session.commit()
     await session.refresh(db_book)
@@ -2576,7 +2576,7 @@ async def _apply_school_customization(
         summary=(
             f'Personalização escolar do livro "{db_book.title}" atualizada.'
         ),
-        changed_fields=list(data),
+        changed_fields={'fields': list(data)},
     )
     await session.commit()
     return await book_response(session, db_book, school_id)

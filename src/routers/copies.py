@@ -152,7 +152,7 @@ async def patch_copy(
         entity_id=db_copy.id,
         school_id=db_copy.school_id,
         summary=f'Exemplar {db_copy.code} atualizado.',
-        changed_fields=list(updates),
+        changed_fields={'fields': list(updates)},
     )
     await session.commit()
     await session.refresh(db_copy)
