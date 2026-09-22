@@ -53,6 +53,7 @@ from src.services.account_activation import (
     utcnow,
     verify_activation_hash,
 )
+from src.services.administrative_activity import record_activity
 from src.settings import Settings
 from src.utils.cpf import (
     classify_cpf_candidates,
@@ -174,6 +175,22 @@ async def update_administrative_capabilities(
                     user_id=target.id, capability=capability.value
                 )
             )
+    record_activity(
+        session,
+        current_user,
+        operation='permissions_changed',
+        entity_type='user',
+        entity_id=target.id,
+        school_id=target.school_id,
+        summary=f'Permissões administrativas de {target.name} alteradas.',
+        changed_fields={
+            'capabilities': [
+                capability.value
+                for capability, enabled in requested_capabilities.items()
+                if enabled
+            ]
+        },
+    )
     await session.commit()
     return {
         'user_id': target.id,
@@ -251,6 +268,16 @@ async def create_user(
         await session.flush()
         invitation, code = await generate_invitation(
             session, db_user, current_user.id
+        )
+        record_activity(
+            session,
+            current_user,
+            operation='created',
+            entity_type='user',
+            entity_id=db_user.id,
+            school_id=db_user.school_id,
+            summary=f'Usuário {db_user.name} cadastrado.',
+            changed_fields={'role': db_user.role.value},
         )
         await session.commit()
     except IntegrityError:
@@ -354,6 +381,16 @@ async def create_student(
         await session.flush()
         invitation, code = await generate_invitation(
             session, db_user, current_user.id
+        )
+        record_activity(
+            session,
+            current_user,
+            operation='created',
+            entity_type='user',
+            entity_id=db_user.id,
+            school_id=db_user.school_id,
+            summary=f'Administrador {db_user.name} cadastrado.',
+            changed_fields={'role': db_user.role.value},
         )
         await session.commit()
     except IntegrityError:
@@ -522,6 +559,19 @@ async def change_user_situation(
             actor_id=current_user.id,
         ),
     ])
+    record_activity(
+        session,
+        current_user,
+        operation='activated' if payload.is_active else 'deactivated',
+        entity_type='user',
+        entity_id=target.id,
+        school_id=target.school_id,
+        summary=(
+            f'Usuário {target.name} '
+            + ('ativado.' if payload.is_active else 'desativado.')
+        ),
+        justification=payload.justification,
+    )
     await session.commit()
     await session.refresh(target)
     return target
@@ -889,6 +939,19 @@ async def update_user(
 
     # role/school_id are immutable via this endpoint
     session.add(target)
+    if not is_self:
+        record_activity(
+            session,
+            current_user,
+            operation='updated',
+            entity_type='user',
+            entity_id=target.id,
+            school_id=target.school_id,
+            summary=(
+                f'Informações administrativas de {target.name} atualizadas.'
+            ),
+            changed_fields=list(data),
+        )
 
     try:
         await session.commit()

@@ -40,6 +40,7 @@ from src.services.book_catalog import (
     resolve_books,
     resolve_one,
 )
+from src.services.administrative_activity import record_activity
 from src.permissions import has_personal_reader_capability
 from src.schemas import (
     BookCopyPublic,
@@ -1069,6 +1070,16 @@ async def create_book(  # noqa: PLR0914
     db_book.authors = authors
 
     session.add(db_book)
+    await session.flush()
+    record_activity(
+        session,
+        user,
+        operation='created',
+        entity_type='book',
+        entity_id=db_book.id,
+        summary=f'Livro "{title}" cadastrado no catálogo global.',
+        changed_fields={'fields': ['title', 'description', 'isbn']},
+    )
 
     try:
         await session.commit()
@@ -1143,6 +1154,17 @@ async def create_book_copy(
         school_id=user.school_id,
     )
     session.add(db_copy)
+    await session.flush()
+    record_activity(
+        session,
+        user,
+        operation='created',
+        entity_type='copy',
+        entity_id=db_copy.id,
+        school_id=db_copy.school_id,
+        summary=f'Exemplar {db_copy.code} cadastrado.',
+        changed_fields={'fields': ['code', 'condition', 'acquisition_date']},
+    )
 
     try:
         await session.commit()
@@ -2362,6 +2384,14 @@ async def delete_book(
     book.is_active = False
     book.edited_by = user.id
     session.add(book)
+    record_activity(
+        session,
+        user,
+        operation='archived',
+        entity_type='book',
+        entity_id=book.id,
+        summary=f'Livro "{book.title}" desativado no catálogo global.',
+    )
     await session.commit()
 
     return {'message': 'Book has been deactivated successfully.'}
@@ -2427,6 +2457,15 @@ async def _apply_global_book_update(
         )
     db_book.edited_by = user.id
     session.add(db_book)
+    record_activity(
+        session,
+        user,
+        operation='updated',
+        entity_type='book',
+        entity_id=db_book.id,
+        summary=f'Livro "{db_book.title}" atualizado no catálogo global.',
+        changed_fields=list(data),
+    )
     await session.commit()
     await session.refresh(db_book)
     await session.refresh(db_book, attribute_names=['genres', 'authors'])
@@ -2449,7 +2488,9 @@ async def _apply_school_customization(
             status_code=HTTPStatus.FORBIDDEN,
             detail='User without school cannot customize books',
         )
-    db_book = await _book_visible_in_school(session, book_id, user.school_id)
+    school_id = user.school_id
+    user_id = user.id
+    db_book = await _book_visible_in_school(session, book_id, school_id)
     data = book.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(
@@ -2464,20 +2505,39 @@ async def _apply_school_customization(
         select(BookSchoolOverride)
         .where(
             BookSchoolOverride.book_id == book_id,
-            BookSchoolOverride.school_id == user.school_id,
+            BookSchoolOverride.school_id == school_id,
         )
         .with_for_update()
     )
     if override is None:
         override = BookSchoolOverride(
-            school_id=user.school_id,
+            school_id=school_id,
             book_id=book_id,
-            created_by=user.id,
+            created_by=user_id,
         )
         override.genres = []
         override.authors = []
         session.add(override)
-        await session.flush()
+        try:
+            await session.flush()
+        except IntegrityError:  # pragma: no cover - concurrent insert recovery
+            # Another request may have created the unique school/book row
+            # concurrently. Reuse that row instead of leaking a 500 error.
+            await session.rollback()
+            override = await session.scalar(
+                select(BookSchoolOverride)
+                .where(
+                    BookSchoolOverride.book_id == book_id,
+                    BookSchoolOverride.school_id == school_id,
+                )
+                .with_for_update()
+            )
+            if override is None:
+                raise
+            await session.refresh(db_book)
+            await session.refresh(
+                override, attribute_names=['genres', 'authors']
+            )
     else:
         await session.refresh(
             override, attribute_names=['genres', 'authors']
@@ -2504,10 +2564,22 @@ async def _apply_school_customization(
             session, author_ids, author_names
         )
         override.authors_overridden = True
-    override.edited_by = user.id
+    override.edited_by = user_id
     session.add(override)
+    record_activity(
+        session,
+        user,
+        operation='customized',
+        entity_type='book',
+        entity_id=book_id,
+        school_id=school_id,
+        summary=(
+            f'Personalização escolar do livro "{db_book.title}" atualizada.'
+        ),
+        changed_fields=list(data),
+    )
     await session.commit()
-    return await book_response(session, db_book, user.school_id)
+    return await book_response(session, db_book, school_id)
 
 
 @router.get(
@@ -2567,6 +2639,15 @@ async def delete_book_customization(
             detail='Book customization not found',
         )
     await session.delete(override)
+    record_activity(
+        session,
+        user,
+        operation='restored',
+        entity_type='book',
+        entity_id=book_id,
+        school_id=user.school_id,
+        summary='Dados globais do livro restaurados para a escola.',
+    )
     await session.commit()
     return {'message': 'Book customization restored'}
 

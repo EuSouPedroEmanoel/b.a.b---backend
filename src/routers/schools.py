@@ -25,6 +25,7 @@ from src.services.account_activation import (
     first_access_url,
     generate_invitation,
 )
+from src.services.administrative_activity import record_activity
 from src.settings import Settings
 from src.utils.cpf import (
     classify_cpf_candidates,
@@ -50,6 +51,16 @@ async def create_school(
     db_school = School(name=school.name, code=school.code)
     session.add(db_school)
     try:
+        await session.flush()
+        record_activity(
+            session,
+            _,
+            operation='created',
+            entity_type='school',
+            entity_id=db_school.id,
+            school_id=db_school.id,
+            summary=f'Escola {db_school.name} cadastrada.',
+        )
         await session.commit()
     except IntegrityError:
         await session.rollback()
@@ -214,6 +225,23 @@ async def update_school_settings(
     school.allow_student_restricted_availability = (
         settings_update.allow_student_restricted_availability
     )
+    record_activity(
+        session,
+        current_user,
+        operation='updated',
+        entity_type='school',
+        entity_id=school.id,
+        school_id=school.id,
+        summary=f'Preferências da escola {school.name} alteradas.',
+        changed_fields={
+            'allow_student_condition_filter': (
+                settings_update.allow_student_condition_filter
+            ),
+            'allow_student_restricted_availability': (
+                settings_update.allow_student_restricted_availability
+            ),
+        },
+    )
     await session.commit()
     await session.refresh(school)
     return school
@@ -236,6 +264,15 @@ async def delete_school(
         )
     school.is_active = False
     session.add(school)
+    record_activity(
+        session,
+        _,
+        operation='deactivated',
+        entity_type='school',
+        entity_id=school.id,
+        school_id=school.id,
+        summary=f'Escola {school.name} desativada.',
+    )
     await session.commit()
     return {'message': 'School deactivated'}
 
@@ -261,6 +298,18 @@ async def change_school_situation(
         )
     school.is_active = payload.is_active
     session.add(school)
+    record_activity(
+        session,
+        _,
+        operation='activated' if payload.is_active else 'deactivated',
+        entity_type='school',
+        entity_id=school.id,
+        school_id=school.id,
+        summary=(
+            f'Escola {school.name} '
+            + ('ativada.' if payload.is_active else 'desativada.')
+        ),
+    )
     await session.commit()
     await session.refresh(school)
     return school

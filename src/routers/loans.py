@@ -37,6 +37,7 @@ from src.schemas import (
     PaginatedResponse,
 )
 from src.security import RoleChecker, get_current_user
+from src.services.administrative_activity import record_activity
 from src.services.book_catalog import public_book, resolve_one
 from src.utils.cpf import cpf_collision_guard, cpf_lookup_digest
 from src.utils.pagination import paginate
@@ -317,6 +318,17 @@ async def create_loan(
             reading_status.status = ReadingStatus.READING
             session.add(reading_status)
 
+    await session.flush()
+    record_activity(
+        session,
+        current_user,
+        operation='created',
+        entity_type='loan',
+        entity_id=loan.id,
+        school_id=school_id,
+        summary=f'Empréstimo do exemplar {copy.code} registrado.',
+    )
+
     await session.commit()
     loan = await session.scalar(
         _loan_public_query().where(Loan.id == loan.id)
@@ -381,6 +393,15 @@ async def return_loan(
 
     reservation = await promote_copy_to_next_reservation(session, copy)
     session.add(copy)
+    record_activity(
+        session,
+        current_user,
+        operation='returned',
+        entity_type='loan',
+        entity_id=loan.id,
+        school_id=loan.school_id,
+        summary=f'Empréstimo #{loan.id} devolvido.',
+    )
 
     await session.commit()
     await session.refresh(loan)
@@ -447,6 +468,15 @@ async def undo_return(
     loan.late_days = 0
     copy.state = BooksStates.BORROWED
     session.add_all([loan, copy])
+    record_activity(
+        session,
+        current_user,
+        operation='return_undone',
+        entity_type='loan',
+        entity_id=loan.id,
+        school_id=loan.school_id,
+        summary=f'Devolução do empréstimo #{loan.id} desfeita.',
+    )
     await session.commit()
     result = await session.scalar(
         _loan_public_query().where(Loan.id == loan.id)

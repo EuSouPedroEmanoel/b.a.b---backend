@@ -21,6 +21,7 @@ from src.models import (
 from src.permissions import has_administrative_capability
 from src.schemas import CirculationPoliciesPublic, CirculationPoliciesUpdate
 from src.security import get_current_user
+from src.services.administrative_activity import record_activity
 
 router = APIRouter(
     prefix='/circulation-policies', tags=['circulation-policies']
@@ -122,6 +123,20 @@ async def update_circulation_policies(
             setattr(policy, field, value)
         session.add(policy)
 
+    record_activity(
+        session,
+        current_user,
+        operation='updated',
+        entity_type='school_settings',
+        entity_id=school_id,
+        school_id=school_id,
+        summary='Regras de circulação da escola alteradas.',
+        changed_fields={
+            'policy_roles': [
+                item.reader_role.value for item in payload.policies
+            ]
+        },
+    )
     await session.commit()
     policies = await resolve_school_policies(session, school_id)
     defaults = [

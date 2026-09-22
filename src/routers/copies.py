@@ -27,6 +27,7 @@ from src.schemas import (
     PaginatedResponse,
 )
 from src.security import RoleChecker, get_current_user
+from src.services.administrative_activity import record_activity
 from src.utils.pagination import paginate
 
 router = APIRouter(prefix='/copies', tags=['copies'])
@@ -143,6 +144,16 @@ async def patch_copy(
 
     db_copy.edited_by = user.id
     session.add(db_copy)
+    record_activity(
+        session,
+        user,
+        operation='updated',
+        entity_type='copy',
+        entity_id=db_copy.id,
+        school_id=db_copy.school_id,
+        summary=f'Exemplar {db_copy.code} atualizado.',
+        changed_fields=list(updates),
+    )
     await session.commit()
     await session.refresh(db_copy)
 
@@ -249,6 +260,23 @@ async def change_copy_situation(
     )
     audit.new_state = payload.state.value
     session.add_all([copy, audit])
+    record_activity(
+        session,
+        user,
+        operation=(
+            'restored'
+            if payload.state == BooksStates.AVAILABLE
+            else payload.state.value
+        ),
+        entity_type='copy',
+        entity_id=copy.id,
+        school_id=copy.school_id,
+        summary=f'Situação do exemplar {copy.code} alterada.',
+        changed_fields={
+            'state': {'from': previous_state.value, 'to': payload.state.value}
+        },
+        justification=payload.justification,
+    )
     await session.commit()
     await session.refresh(copy)
     return copy
@@ -305,6 +333,19 @@ async def undo_copy_situation(
     )
     audit.new_state = copy.state.value
     session.add_all([copy, audit])
+    record_activity(
+        session,
+        user,
+        operation='restored',
+        entity_type='copy',
+        entity_id=copy.id,
+        school_id=copy.school_id,
+        summary=f'Situação do exemplar {copy.code} restaurada.',
+        changed_fields={
+            'state': {'from': previous_state.value, 'to': copy.state.value}
+        },
+        justification='Desfazer alteração de situação.',
+    )
     await session.commit()
     await session.refresh(copy)
     return copy
