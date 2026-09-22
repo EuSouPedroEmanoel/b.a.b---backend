@@ -4,6 +4,7 @@ from datetime import date, datetime
 from enum import Enum
 
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     Column,
     ForeignKey,
@@ -996,6 +997,59 @@ class UserSituationAudit:
     )
     created_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now(), index=True
+    )
+
+
+@table_registry.mapped_as_dataclass()
+class AdministrativeActivity:
+    """Append-only, privacy-minimized administrative activity record."""
+
+    __tablename__ = 'administrative_activities'
+    __table_args__ = (
+        Index(
+            'ix_administrative_activities_school_occurred',
+            'school_id',
+            'occurred_at',
+        ),
+        Index(
+            'ix_administrative_activities_actor_occurred',
+            'actor_id',
+            'occurred_at',
+        ),
+        Index(
+            'ix_administrative_activities_entity',
+            'entity_type',
+            'entity_id',
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), index=True
+    )
+    actor_id: Mapped[int | None] = mapped_column(
+        ForeignKey('users.id', ondelete='SET NULL'), kw_only=True, default=None
+    )
+    actor_display_name: Mapped[str] = mapped_column(
+        String(120), nullable=False
+    )
+    actor_role: Mapped[str] = mapped_column(String(40), nullable=False)
+    school_id: Mapped[int | None] = mapped_column(
+        ForeignKey('schools.id', ondelete='SET NULL'),
+        kw_only=True,
+        default=None,
+    )
+    operation: Mapped[str] = mapped_column(String(40), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    entity_id: Mapped[str | None] = mapped_column(
+        String(80), kw_only=True, default=None
+    )
+    summary: Mapped[str] = mapped_column(String(240), nullable=False)
+    changed_fields: Mapped[dict | None] = mapped_column(
+        JSON, kw_only=True, default=None, nullable=True
+    )
+    justification: Mapped[str | None] = mapped_column(
+        String(1000), kw_only=True, default=None, nullable=True
     )
 
 

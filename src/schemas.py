@@ -40,6 +40,23 @@ class PaginatedResponse(BaseModel, Generic[T]):
     pages: int
 
 
+class AdministrativeActivityPublic(BaseModel):
+    id: str
+    occurred_at: datetime
+    actor_id: int | None = None
+    actor_display_name: str
+    actor_role: str
+    school_id: int | None = None
+    operation: str
+    entity_type: str
+    entity_id: str | None = None
+    summary: str
+    changed_fields: dict | None = None
+    justification: str | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # endregion
 # region - Message
 class Message(BaseModel):
@@ -558,6 +575,15 @@ class FilterPage(BaseModel):
         if self.limit_alias is not None:
             return self.limit_alias
         return self.size
+
+
+class AdministrativeActivityFilter(FilterPage):
+    school_id: int | None = None
+    actor_id: int | None = None
+    entity_type: str | None = None
+    operation: str | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
 
 
 class FilterUser(FilterPage):

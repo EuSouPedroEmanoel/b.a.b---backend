@@ -8,6 +8,7 @@ from starlette.responses import JSONResponse
 from src.limiter import limiter
 from src.routers import (
     account_activation,
+    administrative_activities,
     auth,
     authors,
     books,
@@ -53,6 +54,10 @@ async def rate_limit_handler(request, exc):
 
 app.include_router(auth.router)
 app.include_router(account_activation.router)
+app.include_router(
+    administrative_activities.router,
+    dependencies=[Depends(require_account)],
+)
 app.include_router(users.router, dependencies=[Depends(require_account)])
 app.include_router(books.router)
 app.include_router(copies.router, dependencies=[Depends(require_account)])
