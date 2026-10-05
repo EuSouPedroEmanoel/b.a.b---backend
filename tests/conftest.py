@@ -1,8 +1,8 @@
 import os
 
 # Garante que Settings() funciona mesmo sem .env (CI) para chaves não sensíveis
-# SUPER_ADMIN fica com defaults em src/settings.py:14-16
-# e mock via fixture mock_super_admin_settings
+# SUPER_ADMIN é fornecido explicitamente pelo ambiente de teste quando
+# necessário e pode ser sobrescrito pela fixture mock_super_admin_settings.
 # DEVE vir antes de importar src.* que instanciam Settings()
 os.environ.setdefault(
     'DATABASE_URL', 'postgresql+psycopg://test:test@localhost:5432/test'

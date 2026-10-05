@@ -246,7 +246,13 @@ async def get_student_home(
     latest_book_id = await session.scalar(
         select(BookCopy.book_id)
         .join(Loan, Loan.copy_id == BookCopy.id)
-        .where(Loan.user_id == user.id)
+        .where(
+            Loan.user_id == user.id,
+            *([] if user.school_id is None else [
+                BookCopy.school_id == user.school_id,
+                Loan.school_id == user.school_id,
+            ]),
+        )
         .order_by(Loan.borrowed_at.desc())
         .limit(1)
     )
@@ -293,10 +299,23 @@ async def get_student_home(
         recommended = new_books[:limit]
 
     loan_ids = (await session.scalars(
-        select(BookCopy.book_id).join(Loan, Loan.copy_id == BookCopy.id).where(Loan.user_id == user.id)
+        select(BookCopy.book_id)
+        .join(Loan, Loan.copy_id == BookCopy.id)
+        .where(
+            Loan.user_id == user.id,
+            *([] if user.school_id is None else [
+                BookCopy.school_id == user.school_id,
+                Loan.school_id == user.school_id,
+            ]),
+        )
     )).all()
     reservation_ids = (await session.scalars(
-        select(Reservation.book_id).where(Reservation.user_id == user.id)
+        select(Reservation.book_id).where(
+            Reservation.user_id == user.id,
+            *([] if user.school_id is None else [
+                Reservation.school_id == user.school_id,
+            ]),
+        )
     )).all()
     history_book_ids = set(loan_ids) | set(reservation_ids)
     from src.services.preference_profile import calculate_genre_preferences
@@ -305,7 +324,13 @@ async def get_student_home(
         .join(book_genres, book_genres.c.genre_id == Genre.id)
         .join(BookCopy, BookCopy.book_id == book_genres.c.book_id)
         .join(Loan, Loan.copy_id == BookCopy.id)
-        .where(Loan.user_id == user.id)
+        .where(
+            Loan.user_id == user.id,
+            *([] if user.school_id is None else [
+                BookCopy.school_id == user.school_id,
+                Loan.school_id == user.school_id,
+            ]),
+        )
     )
     preferences = calculate_genre_preferences(
         [(name, 'loan', occurred, status) for name, occurred, status in profile_rows.all()],
@@ -382,7 +407,12 @@ async def get_student_home(
     recent_rows = await session.execute(
         select(BookCopy.book_id, func.max(Loan.returned_at).label('last_read'))
         .join(Loan, Loan.copy_id == BookCopy.id)
-        .where(Loan.user_id == user.id, Loan.status == LoanStatus.RETURNED)
+        .where(
+            Loan.user_id == user.id,
+            Loan.status == LoanStatus.RETURNED,
+            BookCopy.school_id == user.school_id,
+            Loan.school_id == user.school_id,
+        )
         .group_by(BookCopy.book_id)
         .order_by(func.max(Loan.returned_at).desc())
         .limit(limit)
@@ -427,6 +457,8 @@ async def get_student_home(
                     book_genres.c.genre_id == genre_id,
                     Loan.status == LoanStatus.RETURNED,
                     Loan.borrowed_at >= datetime.now(timezone.utc) - timedelta(days=90),
+                    BookCopy.school_id == user.school_id,
+                    Loan.school_id == user.school_id,
                 )
                 .group_by(BookCopy.book_id)
                 .order_by(func.count(Loan.id).desc())
@@ -466,7 +498,11 @@ async def get_student_home(
             .join(book_genres, book_genres.c.genre_id == Genre.id)
             .join(BookCopy, BookCopy.book_id == book_genres.c.book_id)
             .join(Loan, Loan.copy_id == BookCopy.id)
-            .where(Loan.status == LoanStatus.RETURNED)
+            .where(
+                Loan.status == LoanStatus.RETURNED,
+                BookCopy.school_id == user.school_id,
+                Loan.school_id == user.school_id,
+            )
             .group_by(Genre.id, Genre.name)
             .order_by(func.count(Loan.id).desc())
             .limit(1)
@@ -540,7 +576,11 @@ async def get_student_home(
             .join(book_genres, book_genres.c.genre_id == Genre.id)
             .join(BookCopy, BookCopy.book_id == book_genres.c.book_id)
             .join(Loan, Loan.copy_id == BookCopy.id)
-            .where(Loan.status == LoanStatus.RETURNED)
+            .where(
+                Loan.status == LoanStatus.RETURNED,
+                BookCopy.school_id == user.school_id,
+                Loan.school_id == user.school_id,
+            )
             .group_by(Genre.id, Genre.name)
             .order_by(func.count(Loan.id).desc())
             .limit(2)
@@ -1963,7 +2003,13 @@ async def get_recommendations(  # pragma: no cover
         loan_history_rows = await session.execute(
             select(BookCopy.book_id, Loan.borrowed_at, Loan.status)
             .join(Loan, Loan.copy_id == BookCopy.id)
-            .where(Loan.user_id == user.id)
+            .where(
+                Loan.user_id == user.id,
+                *([] if school_scope is None else [
+                    BookCopy.school_id == school_scope,
+                    Loan.school_id == school_scope,
+                ]),
+            )
         )
         loan_history = loan_history_rows.all()
         user_book_ids = {row[0] for row in loan_history}
@@ -1972,7 +2018,12 @@ async def get_recommendations(  # pragma: no cover
             interaction_scores[hist_book_id] = interaction_scores.get(hist_book_id, 0) + _interaction_affinity_score('loan', interacted_at, now, status)
         # also include reservations history
         res_rows = await session.execute(
-            select(Reservation.book_id, Reservation.created_at).where(Reservation.user_id == user.id)
+            select(Reservation.book_id, Reservation.created_at).where(
+                Reservation.user_id == user.id,
+                *([] if school_scope is None else [
+                    Reservation.school_id == school_scope,
+                ]),
+            )
         )
         for hist_book_id, interacted_at in res_rows.all():
             user_book_ids.add(hist_book_id)
@@ -2042,6 +2093,10 @@ async def get_recommendations(  # pragma: no cover
                             .where(
                                 BookCopy.book_id.in_(list(interest_book_ids)),
                                 Loan.user_id != user.id,
+                                *([] if school_scope is None else [
+                                    BookCopy.school_id == school_scope,
+                                    Loan.school_id == school_scope,
+                                ]),
                             )
                             .group_by(Loan.user_id)
                             .order_by(func.count(Loan.id).desc())
@@ -2059,6 +2114,10 @@ async def get_recommendations(  # pragma: no cover
                                     Loan.user_id.in_(similar_user_ids),
                                     BookCopy.book_id != book_id,
                                     BookCopy.book_id.notin_(list(user_book_ids)),
+                                    *([] if school_scope is None else [
+                                        BookCopy.school_id == school_scope,
+                                        Loan.school_id == school_scope,
+                                    ]),
                                 )
                                 .group_by(BookCopy.book_id)
                                 .order_by(func.count(Loan.id).desc())
@@ -2178,7 +2237,13 @@ async def get_recommendations(  # pragma: no cover
         trends_rows = await session.execute(
             select(BookCopy.book_id, func.count(Loan.id).label('cnt'))
             .join(Loan, Loan.copy_id == BookCopy.id)
-            .where(Loan.borrowed_at >= since)
+            .where(
+                Loan.borrowed_at >= since,
+                *([] if school_scope is None else [
+                    BookCopy.school_id == school_scope,
+                    Loan.school_id == school_scope,
+                ]),
+            )
             .group_by(BookCopy.book_id)
             .order_by(func.count(Loan.id).desc())
             .limit(trends_quota * 3)

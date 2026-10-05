@@ -12,6 +12,11 @@ settings = Settings()
 
 
 async def seed_super_admin():
+    if not settings.SUPER_ADMIN_USERNAME or not settings.SUPER_ADMIN_PASSWORD:
+        raise RuntimeError(
+            'SUPER_ADMIN_USERNAME and SUPER_ADMIN_PASSWORD are required '
+            'when SEED_SUPER_ADMIN=1'
+        )
     engine = create_async_engine(settings.DATABASE_URL)
     async with AsyncSession(engine, expire_on_commit=False) as session:
         existing = await session.scalar(

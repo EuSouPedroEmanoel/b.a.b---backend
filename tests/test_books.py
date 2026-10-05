@@ -1,15 +1,23 @@
+from datetime import datetime, timezone
 from http import HTTPStatus
 
 import pytest
 
 from src.models import (
+    Book,
     BookCondition,
+    BookCopy,
     BooksStates,
+    Genre,
+    Loan,
     LoanStatus,
     ReservationStatus,
     School,
+    User,
+    UserRole,
 )
 from src.schemas import BooksPublic
+from src.security import get_password_hash
 from tests.factories import (
     BookCopyFactory,
     BookFactory,
@@ -42,6 +50,104 @@ def _expected_books_json(books, derived_state='available'):
             item['total_copies'] = 0
             item['available_copies'] = 0
     return out
+
+
+@pytest.mark.asyncio
+async def test_recommendations_do_not_use_circulation_from_another_school(
+    session, client, student, student_token, school, other_school
+):
+    other_student = User(
+        username='recommendation-other-school',
+        password=get_password_hash('other-school-password'),
+        role=UserRole.STUDENT,
+        school_id=other_school.id,
+    )
+    genre = Genre(name='Recomendação isolada', slug='recomendacao-isolada')
+    target = Book(
+        title='Livro de referência',
+        added_by=student.id,
+        isbn='9780000000101',
+    )
+    unrelated = Book(
+        title='Livro de outra escola',
+        added_by=student.id,
+        isbn='9780000000102',
+    )
+    target.genres = [genre]
+    session.add_all([other_student, target, unrelated])
+    await session.flush()
+
+    target_school_copy = BookCopy(
+        code='REC-S1-TARGET',
+        book_id=target.id,
+        added_by=student.id,
+        school_id=school.id,
+        state=BooksStates.AVAILABLE,
+    )
+    target_other_copy = BookCopy(
+        code='REC-S2-TARGET',
+        book_id=target.id,
+        added_by=other_student.id,
+        school_id=other_school.id,
+        state=BooksStates.AVAILABLE,
+    )
+    unrelated_school_copy = BookCopy(
+        code='REC-S1-UNRELATED',
+        book_id=unrelated.id,
+        added_by=student.id,
+        school_id=school.id,
+        state=BooksStates.AVAILABLE,
+    )
+    unrelated_other_copy = BookCopy(
+        code='REC-S2-UNRELATED',
+        book_id=unrelated.id,
+        added_by=other_student.id,
+        school_id=other_school.id,
+        state=BooksStates.AVAILABLE,
+    )
+    session.add_all([
+        target_school_copy,
+        target_other_copy,
+        unrelated_school_copy,
+        unrelated_other_copy,
+    ])
+    await session.flush()
+    now = datetime.now(timezone.utc)
+    session.add_all([
+        Loan(
+            copy_id=target_school_copy.id,
+            user_id=student.id,
+            school_id=school.id,
+            due_date=now,
+            returned_at=now,
+            status=LoanStatus.RETURNED,
+        ),
+        Loan(
+            copy_id=target_other_copy.id,
+            user_id=other_student.id,
+            school_id=other_school.id,
+            due_date=now,
+            returned_at=now,
+            status=LoanStatus.RETURNED,
+        ),
+        Loan(
+            copy_id=unrelated_other_copy.id,
+            user_id=other_student.id,
+            school_id=other_school.id,
+            due_date=now,
+            returned_at=now,
+            status=LoanStatus.RETURNED,
+        ),
+    ])
+    await session.commit()
+
+    response = client.get(
+        f'/books/{target.id}/recommendations',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+
+    assert response.status_code == HTTPStatus.OK
+    assert unrelated.id not in {book['id'] for book in response.json()}
 
 
 def test_create_book(client, token):

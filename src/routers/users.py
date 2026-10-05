@@ -79,7 +79,11 @@ StaffOnly = Annotated[
         ])
     ),
 ]
-UserReaders = StaffOnly
+UserAdministrationOnly = Annotated[
+    User,
+    Depends(RoleChecker([UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN])),
+]
+UserReaders = UserAdministrationOnly
 settings = Settings()
 
 
@@ -208,7 +212,7 @@ async def update_administrative_capabilities(
 async def create_user(
     user: StaffCreateSchema,
     session: Session,
-    current_user: StaffOnly,
+    current_user: UserAdministrationOnly,
 ):
     # SCHOOL_ADMIN/LIBRARIAN cannot choose another school; auto-assign own.
     # SUPER_ADMIN must provide school_id explicitly.
@@ -328,7 +332,7 @@ async def _make_unique_username(
 async def create_student(
     payload: StudentCreateSchema,
     session: Session,
-    current_user: StaffOnly,
+    current_user: UserAdministrationOnly,
 ):
     if current_user.role == UserRole.SUPER_ADMIN:
         if current_user.school_id is None:

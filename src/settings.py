@@ -26,9 +26,9 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = 'http://localhost:5173,http://127.0.0.1:5173'
     LOAN_DAYS_DEFAULT: int = 14
     LOAN_MIN_DAYS: int = 1
-    SUPER_ADMIN_USERNAME: str = 'superadmin'
+    SUPER_ADMIN_USERNAME: str | None = None
     SUPER_ADMIN_EMAIL: str = 'superadmin@exemplo.com'
-    SUPER_ADMIN_PASSWORD: str = 'superadmin123'
+    SUPER_ADMIN_PASSWORD: str | None = None
 
     @model_validator(mode='after')
     def validate_production_configuration(self):
@@ -37,10 +37,6 @@ class Settings(BaseSettings):
 
         if self.PUBLIC_WEB_URL.startswith(('http://localhost', 'http://127.0.0.1')):
             raise ValueError('PUBLIC_WEB_URL must point to the production frontend')
-        if self.SUPER_ADMIN_USERNAME == 'superadmin':
-            raise ValueError('SUPER_ADMIN_USERNAME must be changed in production')
-        if self.SUPER_ADMIN_PASSWORD == 'superadmin123':
-            raise ValueError('SUPER_ADMIN_PASSWORD must be changed in production')
         if not self.SUPER_ADMIN_USERNAME or not self.SUPER_ADMIN_PASSWORD:
             raise ValueError('Super admin credentials are required in production')
         if not self.cors_origins:

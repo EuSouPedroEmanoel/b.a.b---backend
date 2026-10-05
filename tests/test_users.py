@@ -201,21 +201,21 @@ def test_create_user_integraty(client, school, super_admin_token):
     }
 
 
-def test_read_users(client, user, token):
+def test_read_users(client, user, school_admin_token):
 
     user_schema = UserPublic.model_validate(user).model_dump(mode='json')
     response = client.get(
-        '/users/', headers={'Authorization': f'Bearer {token}'}
+        '/users/', headers={'Authorization': f'Bearer {school_admin_token}'}
     )
     assert response.status_code == HTTPStatus.OK
-    assert response.json()['items'] == [user_schema]
-    assert response.json()['total'] == 1
+    assert user_schema in response.json()['items']
+    assert response.json()['total'] == 2
 
 
-def test_read_user_by_id(client, user, token):
+def test_read_user_by_id(client, user, school_admin_token):
     response = client.get(
         f'/users/{user.id}',
-        headers={'Authorization': f'Bearer {token}'},
+        headers={'Authorization': f'Bearer {school_admin_token}'},
     )
 
     assert response.status_code == HTTPStatus.OK
@@ -225,9 +225,9 @@ def test_read_user_by_id(client, user, token):
 
 
 def test_read_users_is_forbidden_for_student_and_teacher(
-    client, student, student_token, teacher, teacher_token
+    client, user, token, student, student_token, teacher, teacher_token
 ):
-    for access_token in (student_token, teacher_token):
+    for access_token in (token, student_token, teacher_token):
         response = client.get(
             '/users/', headers={'Authorization': f'Bearer {access_token}'}
         )
@@ -236,9 +236,10 @@ def test_read_users_is_forbidden_for_student_and_teacher(
 
 
 def test_read_user_by_id_is_forbidden_for_student_and_teacher(
-    client, student, student_token, teacher, teacher_token
+    client, user, token, student, student_token, teacher, teacher_token
 ):
     for user_id, access_token in (
+        (user.id, token),
         (student.id, student_token),
         (teacher.id, teacher_token),
     ):
@@ -291,7 +292,7 @@ def test_cannot_change_own_account_situation(client, user, token):
 
 @pytest.mark.asyncio
 async def test_read_users_filters_by_cpf_excludes_inactive_user(
-    session, client, school, token
+    session, client, school, school_admin_token
 ):
     inactive = User(
         username='inactive_lookup',
@@ -308,7 +309,7 @@ async def test_read_users_filters_by_cpf_excludes_inactive_user(
 
     response = client.get(
         '/users/?cpf=529.982.247-25',
-        headers={'Authorization': f'Bearer {token}'},
+        headers={'Authorization': f'Bearer {school_admin_token}'},
     )
 
     assert response.status_code == HTTPStatus.OK
@@ -318,7 +319,7 @@ async def test_read_users_filters_by_cpf_excludes_inactive_user(
 
 @pytest.mark.asyncio
 async def test_read_users_filters_by_cpf_returns_active_user(
-    session, client, school, token
+    session, client, school, school_admin_token
 ):
     active = User(
         username='active_lookup',
@@ -335,7 +336,7 @@ async def test_read_users_filters_by_cpf_returns_active_user(
 
     response = client.get(
         '/users/?cpf=390.533.447-05',
-        headers={'Authorization': f'Bearer {token}'},
+        headers={'Authorization': f'Bearer {school_admin_token}'},
     )
 
     assert response.status_code == HTTPStatus.OK
@@ -344,10 +345,10 @@ async def test_read_users_filters_by_cpf_returns_active_user(
     assert response.json()['items'][0]['is_active'] is True
 
 
-def test_raise_read_user_by_id(client, user, token):
+def test_raise_read_user_by_id(client, user, school_admin_token):
     response = client.get(
         '/users/9999',
-        headers={'Authorization': f'Bearer {token}'},
+        headers={'Authorization': f'Bearer {school_admin_token}'},
     )
 
     assert response.status_code == HTTPStatus.NOT_FOUND
@@ -549,7 +550,7 @@ def test_list_users_without_school_forbidden(client):
 
 
 def test_read_user_by_id_cross_school_not_found(
-    client, user, token, other_school, session
+    client, user, school_admin_token, other_school, session
 ):
     from src.models import User, UserRole
     from src.security import get_password_hash
@@ -570,7 +571,8 @@ def test_read_user_by_id_cross_school_not_found(
 
     asyncio.run(_commit())
     resp = client.get(
-        f'/users/{other_user.id}', headers={'Authorization': f'Bearer {token}'}
+        f'/users/{other_user.id}',
+        headers={'Authorization': f'Bearer {school_admin_token}'}
     )
     assert resp.status_code == HTTPStatus.NOT_FOUND
 
@@ -798,9 +800,10 @@ def test_create_student_duplicate_cpf(client, school_admin_token):
     assert second.json() == {'detail': 'CPF already exists'}
 
 
-def test_list_users_role_filter(client, user, student, token):
+def test_list_users_role_filter(client, user, student, school_admin_token):
     resp = client.get(
-        '/users/?role=student', headers={'Authorization': f'Bearer {token}'}
+        '/users/?role=student',
+        headers={'Authorization': f'Bearer {school_admin_token}'}
     )
     assert resp.status_code == HTTPStatus.OK
     assert resp.json()['total'] == 1

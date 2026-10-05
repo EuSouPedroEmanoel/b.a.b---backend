@@ -33,6 +33,9 @@ Com infraestrutura Docker:
 docker compose up --build
 ```
 
+O Compose de desenvolvimento não executa seeds por padrão. Para popular um
+banco local descartável, use `SEED_DEV=1 docker compose up --build`.
+
 Para produção, use o Compose separado e forneça todas as variáveis obrigatórias
 por secret manager ou arquivo de ambiente fora do repositório:
 
