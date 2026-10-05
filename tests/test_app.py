@@ -47,3 +47,39 @@ def test_paginated_response_helper():
     assert r3['page'] == 1
     assert r3['size'] == 10
     assert r3['pages'] == 3
+
+
+def test_production_settings_reject_localhost_and_default_admin_password(monkeypatch):
+    from pydantic import ValidationError
+
+    from src.settings import Settings
+
+    monkeypatch.setenv('ENVIRONMENT', 'production')
+    monkeypatch.setenv('PUBLIC_WEB_URL', 'http://localhost:5173')
+    monkeypatch.setenv('SUPER_ADMIN_PASSWORD', 'superadmin123')
+
+    try:
+        Settings()
+    except ValidationError as exc:
+        assert 'PUBLIC_WEB_URL' in str(exc)
+    else:
+        raise AssertionError('Production defaults must be rejected')
+
+
+def test_production_settings_reject_local_cors_origin(monkeypatch):
+    from pydantic import ValidationError
+
+    from src.settings import Settings
+
+    monkeypatch.setenv('ENVIRONMENT', 'production')
+    monkeypatch.setenv('PUBLIC_WEB_URL', 'https://biblioteca.example')
+    monkeypatch.setenv('CORS_ORIGINS', 'http://localhost:5173')
+    monkeypatch.setenv('SUPER_ADMIN_USERNAME', 'production-admin')
+    monkeypatch.setenv('SUPER_ADMIN_PASSWORD', 'a-strong-production-password')
+
+    try:
+        Settings()
+    except ValidationError as exc:
+        assert 'CORS_ORIGINS' in str(exc)
+    else:
+        raise AssertionError('Local development origins must be rejected')

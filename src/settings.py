@@ -1,4 +1,4 @@
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,6 +7,7 @@ class Settings(BaseSettings):
         env_file='.env', env_file_encoding='utf-8'
     )
 
+    ENVIRONMENT: str = 'development'
     DATABASE_URL: str
     GOOGLE_BOOKS_API_KEY: str
     SECRET_KEY: str
@@ -22,8 +23,35 @@ class Settings(BaseSettings):
     ACTIVATION_ATTEMPT_WINDOW_MINUTES: int = 15
     ACTIVATION_LOCK_MINUTES: int = 15
     PUBLIC_WEB_URL: str = 'http://localhost:5173'
+    CORS_ORIGINS: str = 'http://localhost:5173,http://127.0.0.1:5173'
     LOAN_DAYS_DEFAULT: int = 14
     LOAN_MIN_DAYS: int = 1
     SUPER_ADMIN_USERNAME: str = 'superadmin'
     SUPER_ADMIN_EMAIL: str = 'superadmin@exemplo.com'
     SUPER_ADMIN_PASSWORD: str = 'superadmin123'
+
+    @model_validator(mode='after')
+    def validate_production_configuration(self):
+        if self.ENVIRONMENT.lower() != 'production':
+            return self
+
+        if self.PUBLIC_WEB_URL.startswith(('http://localhost', 'http://127.0.0.1')):
+            raise ValueError('PUBLIC_WEB_URL must point to the production frontend')
+        if self.SUPER_ADMIN_USERNAME == 'superadmin':
+            raise ValueError('SUPER_ADMIN_USERNAME must be changed in production')
+        if self.SUPER_ADMIN_PASSWORD == 'superadmin123':
+            raise ValueError('SUPER_ADMIN_PASSWORD must be changed in production')
+        if not self.SUPER_ADMIN_USERNAME or not self.SUPER_ADMIN_PASSWORD:
+            raise ValueError('Super admin credentials are required in production')
+        if not self.cors_origins:
+            raise ValueError('CORS_ORIGINS is required in production')
+        if any(
+            origin.startswith(('http://localhost', 'http://127.0.0.1'))
+            for origin in self.cors_origins
+        ):
+            raise ValueError('CORS_ORIGINS cannot contain local development origins')
+        return self
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(',') if origin.strip()]

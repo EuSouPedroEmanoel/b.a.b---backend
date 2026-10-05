@@ -5,7 +5,7 @@ ENV POETRY_VIRTUALENVS_CREATE=false \
 
 WORKDIR /app
 
-RUN pip install poetry
+RUN pip install --no-cache-dir poetry
 
 COPY pyproject.toml poetry.lock* /app/
 RUN poetry install --no-ansi --without dev --no-root
@@ -13,7 +13,7 @@ RUN poetry install --no-ansi --without dev --no-root
 COPY . /app/
 RUN chmod +x /app/entrypoint.sh
 
-RUN poetry config installer.max-workers 10
-RUN poetry install --no-ansi --without dev
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 EXPOSE 8000

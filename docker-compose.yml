@@ -1,6 +1,6 @@
 services:
   base-acesso-bibliotecario-db:
-    image: postgres:latest
+    image: postgres:18-alpine
     container_name: postgres-db
     restart: always
     environment:
@@ -25,8 +25,14 @@ services:
       GOOGLE_BOOKS_API_KEY: "${GOOGLE_BOOKS_API_KEY:?GOOGLE_BOOKS_API_KEY must be configured}"
       SECRET_KEY: "${SECRET_KEY:?SECRET_KEY must be configured}"
       CPF_HMAC_SECRET: "${CPF_HMAC_SECRET:?CPF_HMAC_SECRET must be configured}"
+      ACTIVATION_HMAC_SECRET: "${ACTIVATION_HMAC_SECRET:?ACTIVATION_HMAC_SECRET must be configured}"
       ALGORITHM: "${ALGORITHM:-HS256}"
       ACCESS_TOKEN_EXPIRE_MINUTES: "${ACCESS_TOKEN_EXPIRE_MINUTES:-240}"
+      ENVIRONMENT: development
+      PUBLIC_WEB_URL: "${PUBLIC_WEB_URL:-http://localhost:5173}"
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}"
+      WAIT_FOR_DATABASE_HOST: base-acesso-bibliotecario-db
+      UVICORN_RELOAD: "1"
       SEED_DEV: "1"
 
 

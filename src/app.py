@@ -25,19 +25,21 @@ from src.routers import (
 )
 from src.schemas import ApiStatus
 from src.security import require_account
+from src.settings import Settings
 
+settings = Settings()
 app = FastAPI()
 app.state.limiter = limiter
 
-# CORS para frontend Vite (W3C: permitir credenciais se necessário)
-# allow_origin_regex libera localhost + IPs de rede (192.168.x.x, 10.x.x.x, 172.16-31.x.x) para acesso via Network do Vite  # noqa: E501
+allow_origin_regex = (
+    r'http://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+):5173'
+    if settings.ENVIRONMENT.lower() != 'production'
+    else None
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
-    ],
-    allow_origin_regex=r'http://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+):5173',
+    allow_origins=settings.cors_origins,
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],

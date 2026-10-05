@@ -33,6 +33,17 @@ Com infraestrutura Docker:
 docker compose up --build
 ```
 
+Para produção, use o Compose separado e forneça todas as variáveis obrigatórias
+por secret manager ou arquivo de ambiente fora do repositório:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+O Compose de produção não inclui PostgreSQL local, Adminer ou seeds. Ele aplica
+as migrations, inicia a API sem reload e exige `PUBLIC_WEB_URL`,
+`CORS_ORIGINS`, as chaves criptográficas e credenciais administrativas.
+
 ## Qualidade
 
 ```bash
