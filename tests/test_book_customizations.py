@@ -1,8 +1,9 @@
 from http import HTTPStatus
 
 import pytest
+from sqlalchemy import select
 
-from src.models import User, UserRole
+from src.models import BookSchoolOverride, User, UserRole
 from src.security import get_password_hash
 from tests.factories import BookCopyFactory, BookFactory
 
@@ -115,7 +116,7 @@ async def test_school_book_customizations_are_isolated_and_restorable(
 
 @pytest.mark.asyncio
 async def test_customization_authorization_does_not_accept_client_school_id(
-    client, token, student_token, other_school, book
+    client, token, student_token, super_admin_token, other_school, book
 ):
     payload = {'title': 'Tentativa', 'school_id': other_school.id}
     response = client.patch(
@@ -138,6 +139,23 @@ async def test_customization_authorization_does_not_accept_client_school_id(
         json={'title': 'Não permitido'},
     )
     assert global_response.status_code == HTTPStatus.FORBIDDEN
+
+    state_response = client.get(
+        f'/books/{book.id}/customization', headers=_auth(super_admin_token)
+    )
+    assert state_response.status_code == HTTPStatus.FORBIDDEN
+
+    delete_response = client.delete(
+        f'/books/{book.id}/customization', headers=_auth(super_admin_token)
+    )
+    assert delete_response.status_code == HTTPStatus.FORBIDDEN
+
+    empty_title_response = client.patch(
+        f'/books/{book.id}/customization',
+        headers=_auth(token),
+        json={'title': '   '},
+    )
+    assert empty_title_response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
 
 
 @pytest.mark.asyncio
@@ -200,3 +218,63 @@ async def test_superadmin_global_endpoint_changes_only_the_base_record(
     assert client.get(
         f'/books/{book.id}', headers=_auth(token)
     ).json()['title'] == 'Base atualizada'
+
+
+@pytest.mark.asyncio
+async def test_partial_customization_preserves_global_inheritance_and_explicit_clears(
+    session, client, user, token, super_admin, super_admin_token, book
+):
+    original_description = book.description
+    original_cover = book.cover_url
+
+    title_update = client.patch(
+        f'/books/{book.id}/customization',
+        headers=_auth(token),
+        json={'title': 'Título local'},
+    )
+    assert title_update.status_code == HTTPStatus.OK
+
+    override = await session.scalar(
+        select(BookSchoolOverride).where(
+            BookSchoolOverride.book_id == book.id,
+            BookSchoolOverride.school_id == user.school_id,
+        )
+    )
+    assert override is not None
+    assert override.title_overridden is True
+    assert override.description_overridden is False
+    assert override.cover_url_overridden is False
+
+    global_update = client.patch(
+        f'/books/{book.id}/global',
+        headers=_auth(super_admin_token),
+        json={
+            'description': 'Descrição global nova',
+            'cover_url': 'https://example.com/new-cover.jpg',
+        },
+    )
+    assert global_update.status_code == HTTPStatus.OK
+    effective = client.get(f'/books/{book.id}', headers=_auth(token)).json()
+    assert effective['title'] == 'Título local'
+    assert effective['description'] == 'Descrição global nova'
+    assert effective['cover_url'] == 'https://example.com/new-cover.jpg'
+    assert original_description != effective['description']
+    assert original_cover != effective['cover_url']
+
+    clear_description = client.patch(
+        f'/books/{book.id}/customization',
+        headers=_auth(token),
+        json={'description': None},
+    )
+    assert clear_description.status_code == HTTPStatus.OK
+    assert client.get(
+        f'/books/{book.id}', headers=_auth(token)
+    ).json()['description'] is None
+
+    global_again = client.patch(
+        f'/books/{book.id}/global',
+        headers=_auth(super_admin_token),
+        json={'description': 'Outra descrição global'},
+    )
+    assert global_again.status_code == HTTPStatus.OK
+    assert client.get(f'/books/{book.id}', headers=_auth(token)).json()['description'] is None
