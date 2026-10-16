@@ -451,6 +451,9 @@ async def restore_reservation(
                 current_holder.ready_at = None
                 current_holder.pickup_expires_at = None
                 session.add(current_holder)
+                # Release the unique ready-copy slot before assigning it to
+                # the restored reservation in the same transaction.
+                await session.flush()
             reservation.status = ReservationStatus.READY
             copy.state = BooksStates.RESERVED
             session.add(copy)

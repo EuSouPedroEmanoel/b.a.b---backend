@@ -1,8 +1,10 @@
 from http import HTTPStatus
 
 import pytest
+from fastapi import HTTPException
 
 from src.models import AccountStatus, User, UserRole
+from src.routers import users as users_router
 from src.schemas import UserPublic
 from src.security import get_password_hash
 from src.utils.cpf import cpf_storage_values
@@ -931,6 +933,126 @@ def test_update_administrative_capabilities_rejects_non_librarian(
         json={'manage_library_calendar': True},
     )
     assert response.status_code == HTTPStatus.BAD_REQUEST
+
+
+def test_password_reset_can_be_undone(client, user, school_admin_token):
+    reset = client.post(
+        f'/users/{user.id}/password/reset',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+    )
+    assert reset.status_code == HTTPStatus.OK
+    data = reset.json()
+    assert data['undo_id'] is not None
+    assert data['code']
+
+    undone = client.post(
+        f'/users/{user.id}/password/reset/undo',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+        json={'undo_id': data['undo_id']},
+    )
+    assert undone.status_code == HTTPStatus.OK
+    assert undone.json() == {'message': 'Reset de senha desfeito.'}
+
+
+def test_password_reset_undo_requires_valid_undo_id(client, user, token):
+    missing = client.post(
+        f'/users/{user.id}/password/reset/undo',
+        headers={'Authorization': f'Bearer {token}'},
+        json={},
+    )
+    assert missing.status_code == HTTPStatus.BAD_REQUEST
+
+    invalid = client.post(
+        f'/users/{user.id}/password/reset/undo',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'undo_id': 99999},
+    )
+    assert invalid.status_code == HTTPStatus.CONFLICT
+
+
+def test_activation_state_regeneration_and_invalid_print(client, user, token):
+    state = client.get(
+        f'/users/{user.id}/activation',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert state.status_code == HTTPStatus.OK
+    assert state.json()['has_active_invitation'] is False
+
+    regeneration = client.post(
+        f'/users/{user.id}/activation/regenerate',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert regeneration.status_code == HTTPStatus.CONFLICT
+
+    printed = client.post(
+        f'/users/{user.id}/activation/print',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'username': user.username, 'code': 'BAD-CODE'},
+    )
+    assert printed.status_code == HTTPStatus.BAD_REQUEST
+
+
+def test_password_reset_cannot_be_undone_after_new_invitation(
+    client, user, school_admin_token
+):
+    first = client.post(
+        f'/users/{user.id}/password/reset',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+    )
+    assert first.status_code == HTTPStatus.OK
+    second = client.post(
+        f'/users/{user.id}/password/reset',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+    )
+    assert second.status_code == HTTPStatus.OK
+
+    response = client.post(
+        f'/users/{user.id}/password/reset/undo',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+        json={'undo_id': first.json()['undo_id']},
+    )
+    assert response.status_code == HTTPStatus.CONFLICT
+
+
+def test_latest_password_reset_undo_restores_previous_invitation(
+    client, user, school_admin_token
+):
+    first = client.post(
+        f'/users/{user.id}/password/reset',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+    )
+    second = client.post(
+        f'/users/{user.id}/password/reset',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+    )
+    assert first.status_code == second.status_code == HTTPStatus.OK
+
+    response = client.post(
+        f'/users/{user.id}/password/reset/undo',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+        json={'undo_id': second.json()['undo_id']},
+    )
+    assert response.status_code == HTTPStatus.OK
+
+
+def test_cannot_deactivate_last_school_admin(
+    client, school_admin, super_admin_token
+):
+    response = client.post(
+        f'/users/{school_admin.id}/situation',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={'is_active': False, 'justification': 'Teste'},
+    )
+    assert response.status_code == HTTPStatus.CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_cannot_deactivate_last_super_admin(
+    session, super_admin
+):
+    with pytest.raises(HTTPException) as error:
+        await users_router._ensure_not_last_administrator(session, super_admin)
+    assert error.value.status_code == HTTPStatus.CONFLICT
 
 
 def test_update_user_validation_and_missing_target(client, user, token):

@@ -1396,3 +1396,182 @@ async def test_get_book_not_in_school(
         headers={'Authorization': f'Bearer {token}'},
     )
     assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_lookup_normalizes_external_metadata_and_invalid_date(
+    client, token
+):
+    from unittest.mock import AsyncMock, patch
+
+    with patch(
+        'src.routers.books.get_google_book_info', new_callable=AsyncMock
+    ) as google:
+        google.return_value = {
+            'title': 'Livro externo',
+            'genres': ['Fiction', 'Fiction', ''],
+            'authors': ['Autor', 'Autor', ''],
+            'published_date': 'not-a-date',
+        }
+        response = client.get(
+            '/books/lookup?isbn=9780000000099',
+            headers={'Authorization': f'Bearer {token}'},
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['genres'] == ['Ficção']
+    assert response.json()['authors'] == ['Autor']
+    assert response.json()['published_date'] is None
+
+
+def test_guest_resolve_title_and_internal_search_are_restricted(
+    client, school
+):
+    guest = client.post('/auth/guest', json={'school_code': school.code})
+    assert guest.status_code == HTTPStatus.OK
+    headers = {'Authorization': f"Bearer {guest.json()['access_token']}"}
+
+    title = client.get('/books/resolve?term=livro', headers=headers)
+    assert title.json() == {'kind': 'title', 'book_id': None}
+
+    internal = client.get('/books/?internal_code=EX-1', headers=headers)
+    assert internal.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_create_book_uses_external_fallbacks_and_ignores_bad_date(
+    client, token
+):
+    from unittest.mock import AsyncMock, patch
+
+    with patch(
+        'src.routers.books.get_google_book_info', new_callable=AsyncMock
+    ) as google:
+        google.return_value = {
+            'title': 'Livro enriquecido',
+            'description': 'Descrição externa',
+            'genres': ['Aventura'],
+            'authors': ['Autor externo'],
+            'published_date': 'invalid-date',
+        }
+        response = client.post(
+            '/books/',
+            headers={'Authorization': f'Bearer {token}'},
+            json={'isbn': '9780000000098'},
+        )
+
+    assert response.status_code == HTTPStatus.CREATED
+    assert response.json()['title'] == 'Livro enriquecido'
+    assert response.json()['description'] == 'Descrição externa'
+    assert response.json()['published_date'] is None
+    assert response.json()['genre_names'] == ['Aventura']
+    assert response.json()['author_names'] == ['Autor externo']
+
+
+@pytest.mark.asyncio
+async def test_guest_cannot_resolve_isbn_without_school_copy(
+    session, client, school, user
+):
+    book = BookFactory(user_id=user.id, isbn='9780000000088')
+    session.add(book)
+    await session.commit()
+    guest = client.post('/auth/guest', json={'school_code': school.code})
+    headers = {'Authorization': f"Bearer {guest.json()['access_token']}"}
+
+    response = client.get('/books/resolve?term=9780000000088', headers=headers)
+    assert response.status_code == HTTPStatus.OK
+    assert response.json() == {'kind': 'none', 'book_id': None}
+
+    orphan = client.get(f'/books/{book.id}', headers=headers)
+    assert orphan.status_code == HTTPStatus.NOT_FOUND
+
+
+def test_book_filters_sort_and_metadata_filters(client, token):
+    created = client.post(
+        '/books/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={
+            'title': 'Livro filtros completos',
+            'genre_names': ['Filtro Gênero'],
+            'author_names': ['Filtro Autor'],
+        },
+    )
+    assert created.status_code == HTTPStatus.CREATED
+    book_id = created.json()['id']
+    response = client.get(
+        '/books/?genre=Filtro Gênero&author=Filtro Autor&sort_by=title&sort_order=desc',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert [item['id'] for item in response.json()['items']] == [book_id]
+
+
+@pytest.mark.asyncio
+async def test_student_personal_state_searches_are_scoped(
+    session, client, user, student, student_token
+):
+    book = BookFactory(user_id=user.id, title='Livro emprestado pessoal')
+    session.add(book)
+    await session.commit()
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=student.school_id,
+        state=BooksStates.BORROWED,
+        code='PERSONAL-STATE-1',
+    )
+    session.add(copy)
+    await session.flush()
+    session.add(
+        Loan(
+            copy_id=copy.id,
+            user_id=student.id,
+            school_id=student.school_id,
+            due_date=datetime(2030, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    await session.commit()
+
+    borrowed = client.get(
+        '/books/?q=borrowed',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+    assert borrowed.status_code == HTTPStatus.OK
+    assert [item['id'] for item in borrowed.json()['items']] == [book.id]
+
+    restricted = client.get(
+        '/books/?q=lost',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+    assert restricted.status_code == HTTPStatus.OK
+    assert restricted.json()['items'] == []
+
+
+def test_global_update_resolves_metadata_and_empty_customization_is_rejected(
+    client, super_admin, super_admin_token, token, book
+):
+    updated = client.patch(
+        f'/books/{book.id}/global',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={
+            'title': 'Global metadata updated',
+            'genre_names': ['Global genre'],
+            'author_names': ['Global author'],
+        },
+    )
+    assert updated.status_code == HTTPStatus.OK
+    assert updated.json()['genre_names'] == ['Global genre']
+    assert updated.json()['author_names'] == ['Global author']
+
+    empty = client.patch(
+        f'/books/{book.id}/customization',
+        headers={'Authorization': f'Bearer {token}'},
+        json={},
+    )
+    assert empty.status_code == HTTPStatus.BAD_REQUEST
+
+    missing = client.delete(
+        f'/books/{book.id}/customization',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert missing.status_code == HTTPStatus.NOT_FOUND

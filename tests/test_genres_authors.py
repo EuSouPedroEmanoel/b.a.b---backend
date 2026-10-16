@@ -155,6 +155,52 @@ def test_delete_author_success(client, super_admin_token):
     assert restored.json()['is_active'] is False
 
 
+def test_change_genre_situation_and_missing_genre(client, super_admin_token):
+    created = client.post(
+        '/genres/',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={'name': 'Gênero situação'},
+    )
+    gid = created.json()['id']
+    changed = client.post(
+        f'/genres/{gid}/situation',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={'is_active': False},
+    )
+    assert changed.status_code == HTTPStatus.OK
+    assert changed.json()['is_active'] is False
+
+    missing = client.post(
+        '/genres/99999/situation',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={'is_active': True},
+    )
+    assert missing.status_code == HTTPStatus.NOT_FOUND
+
+
+def test_change_author_situation_and_missing_author(client, super_admin_token):
+    created = client.post(
+        '/authors/',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={'name': 'Autor situação'},
+    )
+    aid = created.json()['id']
+    changed = client.post(
+        f'/authors/{aid}/situation',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={'is_active': False},
+    )
+    assert changed.status_code == HTTPStatus.OK
+    assert changed.json()['is_active'] is False
+
+    missing = client.post(
+        '/authors/99999/situation',
+        headers={'Authorization': f'Bearer {super_admin_token}'},
+        json={'is_active': True},
+    )
+    assert missing.status_code == HTTPStatus.NOT_FOUND
+
+
 def test_book_create_with_genre_author_names(client, token):
     resp = client.post(
         '/books/',

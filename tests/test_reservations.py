@@ -1121,3 +1121,116 @@ async def test_list_reservations_super_admin(
         headers={'Authorization': f'Bearer {super_admin_token}'},
     )
     assert cancel.status_code == HTTPStatus.FORBIDDEN
+
+
+def test_restore_reservation_not_found(client, student_token):
+    response = client.post(
+        '/reservations/99999/restore',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_restore_reservation_owner_without_copy_becomes_active(
+    session, client, student, student_token, book
+):
+    reservation = ReservationFactory(
+        book_id=book.id,
+        user_id=student.id,
+        school_id=student.school_id,
+        status=ReservationStatus.CANCELLED,
+    )
+    session.add(reservation)
+    await session.commit()
+    await session.refresh(reservation)
+
+    response = client.post(
+        f'/reservations/{reservation.id}/restore',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+    assert response.status_code == HTTPStatus.OK
+    restored = await session.get(Reservation, reservation.id)
+    assert restored.status == ReservationStatus.ACTIVE
+    assert restored.copy_id is None
+
+
+@pytest.mark.asyncio
+async def test_restore_reservation_assigns_copy_and_releases_holder(
+    session, client, user, student, teacher, book, student_token
+):
+    copy = BookCopyFactory(
+        book_id=book.id,
+        user_id=user.id,
+        school_id=user.school_id,
+        state=BooksStates.AVAILABLE,
+        code='RESTORE-COPY-1',
+    )
+    session.add(copy)
+    await session.flush()
+    cancelled = ReservationFactory(
+        book_id=book.id,
+        user_id=student.id,
+        school_id=student.school_id,
+        status=ReservationStatus.CANCELLED,
+        copy_id=copy.id,
+    )
+    holder = ReservationFactory(
+        book_id=book.id,
+        user_id=teacher.id,
+        school_id=teacher.school_id,
+        status=ReservationStatus.READY,
+        copy_id=copy.id,
+    )
+    session.add_all([cancelled, holder])
+    await session.commit()
+    await session.refresh(cancelled)
+    await session.refresh(holder)
+
+    response = client.post(
+        f'/reservations/{cancelled.id}/restore',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+    assert response.status_code == HTTPStatus.OK
+    await session.refresh(cancelled)
+    await session.refresh(holder)
+    await session.refresh(copy)
+    assert cancelled.status == ReservationStatus.READY
+    assert cancelled.copy_id == copy.id
+    assert holder.status == ReservationStatus.ACTIVE
+    assert holder.copy_id is None
+    assert copy.state == BooksStates.RESERVED
+
+
+@pytest.mark.asyncio
+async def test_restore_reservation_rejects_other_user_and_active_state(
+    session, client, student, teacher, student_token, teacher_token, book
+):
+    cancelled = ReservationFactory(
+        book_id=book.id,
+        user_id=student.id,
+        school_id=student.school_id,
+        status=ReservationStatus.CANCELLED,
+    )
+    active = ReservationFactory(
+        book_id=book.id,
+        user_id=teacher.id,
+        school_id=teacher.school_id,
+        status=ReservationStatus.ACTIVE,
+    )
+    session.add_all([cancelled, active])
+    await session.commit()
+    await session.refresh(cancelled)
+    await session.refresh(active)
+
+    forbidden = client.post(
+        f'/reservations/{cancelled.id}/restore',
+        headers={'Authorization': f'Bearer {teacher_token}'},
+    )
+    assert forbidden.status_code == HTTPStatus.FORBIDDEN
+
+    conflict = client.post(
+        f'/reservations/{active.id}/restore',
+        headers={'Authorization': f'Bearer {teacher_token}'},
+    )
+    assert conflict.status_code == HTTPStatus.CONFLICT
