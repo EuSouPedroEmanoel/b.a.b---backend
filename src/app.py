@@ -18,6 +18,7 @@ from src.routers import (
     genres,
     library_calendar,
     loans,
+    privacy,
     reading_statuses,
     reservations,
     schools,
@@ -55,6 +56,7 @@ async def rate_limit_handler(request, exc):
 
 
 app.include_router(auth.router)
+app.include_router(privacy.router)
 app.include_router(account_activation.router)
 app.include_router(
     administrative_activities.router,

@@ -144,6 +144,31 @@ class ReadingStatus(str, Enum):
     READ = 'read'
 
 
+class PrivacyRequestStatus(str, Enum):
+    PENDING = 'pending'
+    IN_REVIEW = 'in_review'
+    FULFILLED = 'fulfilled'
+    PARTIALLY_FULFILLED = 'partially_fulfilled'
+    DENIED = 'denied'
+    CANCELLED = 'cancelled'
+
+
+class PrivacyRequestType(str, Enum):
+    ACCESS = 'access'
+    INFORMATION = 'information'
+    CORRECTION = 'correction'
+    PORTABILITY = 'portability'
+    ANONYMIZATION = 'anonymization'
+    BLOCKING = 'blocking'
+    ERASURE = 'erasure'
+    CONSENT_REVOCATION = 'consent_revocation'
+
+
+class PrivacyProcessingMode(str, Enum):
+    AUTOMATIC_ANONYMIZATION = 'automatic_anonymization'
+    ADMINISTRATIVE_REVIEW = 'administrative_review'
+
+
 @table_registry.mapped_as_dataclass()
 class School:
     __tablename__ = 'schools'
@@ -252,6 +277,12 @@ class User:
     )
     auth_version: Mapped[int] = mapped_column(
         kw_only=True, default=0, nullable=False
+    )
+    terms_accepted_version: Mapped[str | None] = mapped_column(
+        String(40), kw_only=True, default=None, nullable=True
+    )
+    terms_accepted_at: Mapped[datetime | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now()
@@ -988,9 +1019,7 @@ class UserSituationAudit:
     previous_account_status: Mapped[str] = mapped_column(
         String(40), nullable=False
     )
-    new_account_status: Mapped[str] = mapped_column(
-        String(40), nullable=False
-    )
+    new_account_status: Mapped[str] = mapped_column(String(40), nullable=False)
     justification: Mapped[str] = mapped_column(String(1000), nullable=False)
     actor_id: Mapped[int] = mapped_column(
         ForeignKey('users.id'), nullable=False
@@ -1261,4 +1290,79 @@ class RevokedToken:
     expires_at: Mapped[datetime] = mapped_column(nullable=False)
     revoked_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now()
+    )
+
+
+@table_registry.mapped_as_dataclass()
+class SchoolPrivacyPolicy:
+    __tablename__ = 'school_privacy_policies'
+
+    school_id: Mapped[int] = mapped_column(
+        ForeignKey('schools.id', ondelete='CASCADE'), primary_key=True
+    )
+    processing_mode: Mapped[PrivacyProcessingMode] = mapped_column(
+        SQLEnum(
+            PrivacyProcessingMode,
+            values_callable=lambda x: [e.value for e in x],
+            name='privacyprocessingmode',
+        ),
+        default=PrivacyProcessingMode.AUTOMATIC_ANONYMIZATION,
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+@table_registry.mapped_as_dataclass()
+class PrivacyRequest:
+    __tablename__ = 'privacy_requests'
+
+    id: Mapped[int] = mapped_column(
+        init=False, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey('users.id'), nullable=False, index=True
+    )
+    school_id: Mapped[int | None] = mapped_column(
+        ForeignKey('schools.id', ondelete='SET NULL'),
+        kw_only=True,
+        default=None,
+        index=True,
+    )
+    request_type: Mapped[PrivacyRequestType] = mapped_column(
+        SQLEnum(
+            PrivacyRequestType,
+            values_callable=lambda x: [e.value for e in x],
+            name='privacyrequesttype',
+        ),
+        nullable=False,
+    )
+    status: Mapped[PrivacyRequestStatus] = mapped_column(
+        SQLEnum(
+            PrivacyRequestStatus,
+            values_callable=lambda x: [e.value for e in x],
+            name='privacyrequeststatus',
+        ),
+        default=PrivacyRequestStatus.PENDING,
+        nullable=False,
+        index=True,
+    )
+    description: Mapped[str | None] = mapped_column(
+        String(1000), kw_only=True, default=None, nullable=True
+    )
+    resolution: Mapped[str | None] = mapped_column(
+        String(1000), kw_only=True, default=None, nullable=True
+    )
+    decided_by: Mapped[int | None] = mapped_column(
+        ForeignKey('users.id', ondelete='SET NULL'),
+        kw_only=True,
+        default=None,
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        init=False, server_default=func.now(), onupdate=func.now()
     )

@@ -8,6 +8,7 @@ from src.circulation import resolve_circulation_policy
 from src.models import (
     AdministrativeCapability,
     BooksStates,
+    CirculationPolicy,
     Loan,
     LoanStatus,
     UserAdministrativeCapability,
@@ -55,6 +56,15 @@ async def test_defaults_are_distinct_by_reader_role(session, school):
 
     assert (student.max_active_loans, student.loan_duration_days) == (3, 14)
     assert (teacher.max_active_loans, teacher.loan_duration_days) == (5, 21)
+    policy = CirculationPolicy(
+        school_id=school.id,
+        reader_role=UserRole.STUDENT,
+        max_active_loans=1,
+        loan_duration_days=1,
+        max_active_reservations=1,
+    )
+    policy.school = school
+    assert policy.school_code == school.code
 
 
 @pytest.mark.asyncio

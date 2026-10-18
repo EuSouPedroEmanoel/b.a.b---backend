@@ -283,6 +283,32 @@ def test_read_current_user_rejects_invalid_and_missing_tokens(client):
     assert missing.json() == {'detail': 'Not authenticated'}
 
 
+def test_terms_acceptance_is_versioned_and_persisted(
+    client, student, student_token
+):
+    before = client.get(
+        '/users/me', headers={'Authorization': f'Bearer {student_token}'}
+    )
+    assert before.status_code == HTTPStatus.OK
+    assert before.json()['terms_accepted_version'] is None
+    assert before.json()['terms_current_version'] == 'v1'
+
+    accepted = client.post(
+        '/users/me/terms-acceptance',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+    assert accepted.status_code == HTTPStatus.OK
+    assert accepted.json()['terms_accepted_version'] == 'v1'
+    assert accepted.json()['terms_accepted_at'] is not None
+
+    repeated = client.post(
+        '/users/me/terms-acceptance',
+        headers={'Authorization': f'Bearer {student_token}'},
+    )
+    assert repeated.status_code == HTTPStatus.OK
+    assert repeated.json()['terms_accepted_version'] == 'v1'
+
+
 def test_cannot_change_own_account_situation(client, user, token):
     deactivation = client.post(
         f'/users/{user.id}/situation',
@@ -992,6 +1018,36 @@ def test_activation_state_regeneration_and_invalid_print(client, user, token):
     assert printed.status_code == HTTPStatus.BAD_REQUEST
 
 
+def test_user_lifecycle_missing_targets_and_repeated_state(
+    client, user, token, other_user
+):
+    missing_activation = client.get(
+        '/users/99999/activation',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert missing_activation.status_code == HTTPStatus.NOT_FOUND
+
+    missing_situation = client.post(
+        '/users/99999/situation',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'is_active': False, 'justification': 'Teste'},
+    )
+    assert missing_situation.status_code == HTTPStatus.NOT_FOUND
+
+    repeated = client.post(
+        f'/users/{other_user.id}/situation',
+        headers={'Authorization': f'Bearer {token}'},
+        json={'is_active': True, 'justification': 'Teste'},
+    )
+    assert repeated.status_code == HTTPStatus.CONFLICT
+
+    undo_without_audit = client.post(
+        f'/users/{other_user.id}/situation/undo',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert undo_without_audit.status_code == HTTPStatus.CONFLICT
+
+
 def test_password_reset_cannot_be_undone_after_new_invitation(
     client, user, school_admin_token
 ):
@@ -1081,6 +1137,25 @@ def test_update_user_validation_and_missing_target(client, user, token):
 def test_update_user_cpf_and_student_fields(
     client, student, school_admin_token
 ):
+    created = client.post(
+        '/users/students',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+        json={
+            'name': 'Outro aluno',
+            'cpf': '11144477735',
+            'birthdate': '2014-02-01',
+            'turma_numero': 8,
+            'turma_letra': 'B',
+        },
+    )
+    assert created.status_code == HTTPStatus.CREATED
+    duplicate = client.put(
+        f'/users/{student.id}',
+        headers={'Authorization': f'Bearer {school_admin_token}'},
+        json={'cpf': '11144477735'},
+    )
+    assert duplicate.status_code == HTTPStatus.CONFLICT
+
     response = client.put(
         f'/users/{student.id}',
         headers={'Authorization': f'Bearer {school_admin_token}'},

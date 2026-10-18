@@ -466,7 +466,26 @@ async def read_users(
 
 @router.get('/me', status_code=HTTPStatus.OK, response_model=CurrentUserPublic)
 async def read_current_user(current_user: CurrentUser):
-    return current_user
+    return {
+        **CurrentUserPublic.model_validate(current_user).model_dump(),
+        'terms_current_version': settings.TERMS_VERSION,
+    }
+
+
+@router.post('/me/terms-acceptance', response_model=CurrentUserPublic)
+async def accept_current_user_terms(
+    session: Session,
+    current_user: CurrentUser,
+):
+    current_user.terms_accepted_version = settings.TERMS_VERSION
+    current_user.terms_accepted_at = datetime.utcnow()
+    session.add(current_user)
+    await session.commit()
+    await session.refresh(current_user)
+    return {
+        'terms_current_version': settings.TERMS_VERSION,
+        **CurrentUserPublic.model_validate(current_user).model_dump(),
+    }
 
 
 async def _managed_status_target(

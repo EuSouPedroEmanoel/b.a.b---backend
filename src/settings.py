@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     ACTIVATION_ORIGIN_ATTEMPTS: int = 20
     ACTIVATION_ATTEMPT_WINDOW_MINUTES: int = 15
     ACTIVATION_LOCK_MINUTES: int = 15
+    TERMS_VERSION: str = 'v1'
     PUBLIC_WEB_URL: str = 'http://localhost:5173'
     CORS_ORIGINS: str = 'http://localhost:5173,http://127.0.0.1:5173'
     LOAN_DAYS_DEFAULT: int = 14

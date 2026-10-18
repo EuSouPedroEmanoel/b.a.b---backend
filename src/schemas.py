@@ -15,6 +15,9 @@ from src.models import (
     BookCondition,
     BooksStates,
     LoanStatus,
+    PrivacyProcessingMode,
+    PrivacyRequestStatus,
+    PrivacyRequestType,
     ReadingStatus,
     ReservationStatus,
     UserRole,
@@ -61,6 +64,56 @@ class AdministrativeActivityPublic(BaseModel):
 # region - Message
 class Message(BaseModel):
     message: str
+
+
+class PrivacyProfilePublic(BaseModel):
+    account: dict
+    library: dict
+    preferences: dict
+    security: dict
+    sharing: list[str]
+    correction_guidance: list[str]
+    preservation: list[str]
+
+
+class PrivacyExportRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
+class PrivacyRequestCreate(BaseModel):
+    request_type: PrivacyRequestType
+    description: str | None = Field(default=None, max_length=1000)
+    password: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class PrivacyRequestPublic(BaseModel):
+    id: int
+    request_type: PrivacyRequestType
+    status: PrivacyRequestStatus
+    description: str | None
+    resolution: str | None
+    school_id: int | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PrivacyRequestDecision(BaseModel):
+    status: PrivacyRequestStatus
+    resolution: str | None = Field(default=None, max_length=1000)
+
+
+class PrivacyPolicyPublic(BaseModel):
+    school_id: int
+    processing_mode: PrivacyProcessingMode
+    updated_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PrivacyPolicyUpdate(BaseModel):
+    processing_mode: PrivacyProcessingMode
 
 
 class ApiStatus(BaseModel):
@@ -206,6 +259,9 @@ class CurrentUserPublic(BaseModel):
     school_allows_student_restricted_availability: bool = False
     is_active: bool
     account_status: AccountStatus
+    terms_accepted_version: str | None = None
+    terms_accepted_at: datetime | None = None
+    terms_current_version: str | None = None
     administrative_capabilities: list[AdministrativeCapability] = []
 
     model_config = ConfigDict(from_attributes=True)

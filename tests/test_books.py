@@ -1547,6 +1547,40 @@ async def test_student_personal_state_searches_are_scoped(
     assert restricted.json()['items'] == []
 
 
+def test_book_state_and_relationship_id_filters(client, token, user):
+    created = client.post(
+        '/books/',
+        headers={'Authorization': f'Bearer {token}'},
+        json={
+            'title': 'Livro por ids',
+            'genre_names': ['Filtro por id'],
+            'author_names': ['Autor por id'],
+        },
+    )
+    assert created.status_code == HTTPStatus.CREATED
+    data = created.json()
+    copy = client.post(
+        f"/books/{data['id']}/copies/",
+        headers={'Authorization': f'Bearer {token}'},
+        json={'book_id': data['id'], 'code': 'FILTER-ID-COPY'},
+    )
+    assert copy.status_code == HTTPStatus.CREATED
+
+    response = client.get(
+        f"/books/?state=available&genre_id={data['genre_ids'][0]}"
+        f"&author_id={data['author_ids'][0]}",
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert [item['id'] for item in response.json()['items']] == [data['id']]
+
+    lost_query = client.get(
+        '/books/?q=lost',
+        headers={'Authorization': f'Bearer {token}'},
+    )
+    assert lost_query.status_code == HTTPStatus.OK
+
+
 def test_global_update_resolves_metadata_and_empty_customization_is_rejected(
     client, super_admin, super_admin_token, token, book
 ):
