@@ -5,13 +5,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.database import get_session
 from src.models import (
-    AccountStatus,
     Loan,
     LoanStatus,
     PrivacyProcessingMode,
@@ -39,6 +38,7 @@ from src.schemas import (
 )
 from src.security import get_current_user, is_guest, verify_password
 from src.services.administrative_activity import record_activity
+from src.services.privacy import active_loans, anonymize_user
 from src.utils.pagination import paginate
 
 router = APIRouter(prefix='/privacy', tags=['privacy'])
@@ -90,47 +90,6 @@ async def _verify_sensitive_password(user: User, password: str | None) -> None:
         raise HTTPException(
             HTTPStatus.UNAUTHORIZED, 'Confirmação de senha inválida'
         )
-
-
-async def _active_loans(session: AsyncSession, user_id: int) -> int:
-    return int(
-        await session.scalar(
-            select(func.count(Loan.id)).where(
-                Loan.user_id == user_id, Loan.status == LoanStatus.ACTIVE
-            )
-        )
-        or 0
-    )
-
-
-async def _anonymize_user(session: AsyncSession, target: User) -> None:
-    target.name = 'Titular anonimizado'
-    target.username = f'anonymized-{target.id}'
-    target.cpf_lookup_hash = None
-    target.cpf_collision_guard = None
-    target.cpf_last2 = None
-    target.birthdate = None
-    target.turma_numero = None
-    target.turma_letra = None
-    target.password = None
-    target.is_active = False
-    target.auth_version += 1
-    target.account_status = AccountStatus.DISABLED
-    await session.execute(
-        delete(UserBookFavorite).where(UserBookFavorite.user_id == target.id)
-    )
-    await session.execute(
-        delete(UserReadingStatus).where(UserReadingStatus.user_id == target.id)
-    )
-    await session.execute(
-        delete(Reservation).where(
-            Reservation.user_id == target.id,
-            Reservation.status.in_([
-                ReservationStatus.ACTIVE,
-                ReservationStatus.READY,
-            ]),
-        )
-    )
 
 
 @router.get('/me', response_model=PrivacyProfilePublic)
@@ -334,6 +293,11 @@ async def create_privacy_request(
     payload: PrivacyRequestCreate, session: Session, user: CurrentUser
 ):
     user = _require_account(user)
+    if payload.request_type == PrivacyRequestType.CONSENT_REVOCATION:
+        raise HTTPException(
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            'Revogação de consentimento ainda não está disponível',
+        )
     sensitive = {
         PrivacyRequestType.ANONYMIZATION,
         PrivacyRequestType.ERASURE,
@@ -363,15 +327,15 @@ async def create_privacy_request(
             == PrivacyProcessingMode.AUTOMATIC_ANONYMIZATION
         )
         if automatic:
-            active_loans = await _active_loans(session, user.id)
-            if active_loans:
-                request.status = PrivacyRequestStatus.PARTIALLY_FULFILLED
+            active_loan_count = await active_loans(session, user.id)
+            if active_loan_count:
+                request.status = PrivacyRequestStatus.PENDING
                 request.resolution = (
                     'A anonimização aguarda a devolução dos empréstimos '
                     'ativos.'
                 )
             else:
-                await _anonymize_user(session, user)
+                await anonymize_user(session, user)
                 request.status = PrivacyRequestStatus.FULFILLED
                 request.resolution = (
                     'Dados diretos anonimizados; históricos necessários '
@@ -444,6 +408,15 @@ async def cancel_privacy_request(
             HTTPStatus.CONFLICT, 'Solicitação não pode mais ser cancelada'
         )
     request.status = PrivacyRequestStatus.CANCELLED
+    record_activity(
+        session,
+        user,
+        operation='cancelled',
+        entity_type='privacy_request',
+        entity_id=request.id,
+        school_id=request.school_id,
+        summary='Solicitação de privacidade cancelada',
+    )
     await session.commit()
     await session.refresh(request)
     return request
@@ -553,21 +526,31 @@ async def decide_privacy_request(
 ):
     user = _require_privacy_operator(user)
     request = await session.scalar(
-        select(PrivacyRequest).where(PrivacyRequest.id == request_id)
+        select(PrivacyRequest)
+        .where(PrivacyRequest.id == request_id)
+        .with_for_update()
     )
     if not request or (
         user.role != UserRole.SUPER_ADMIN
         and request.school_id != user.school_id
     ):
         raise HTTPException(HTTPStatus.NOT_FOUND, 'Solicitação não encontrada')
-    if payload.status not in {
-        PrivacyRequestStatus.IN_REVIEW,
-        PrivacyRequestStatus.FULFILLED,
-        PrivacyRequestStatus.PARTIALLY_FULFILLED,
-        PrivacyRequestStatus.DENIED,
-    }:
+    allowed_transitions = {
+        PrivacyRequestStatus.PENDING: {
+            PrivacyRequestStatus.IN_REVIEW,
+            PrivacyRequestStatus.FULFILLED,
+            PrivacyRequestStatus.PARTIALLY_FULFILLED,
+            PrivacyRequestStatus.DENIED,
+        },
+        PrivacyRequestStatus.IN_REVIEW: {
+            PrivacyRequestStatus.FULFILLED,
+            PrivacyRequestStatus.PARTIALLY_FULFILLED,
+            PrivacyRequestStatus.DENIED,
+        },
+    }
+    if payload.status not in allowed_transitions.get(request.status, set()):
         raise HTTPException(
-            HTTPStatus.UNPROCESSABLE_ENTITY, 'Estado de decisão inválido'
+            HTTPStatus.CONFLICT, 'Transição de estado inválida'
         )
     if (
         payload.status
@@ -588,18 +571,20 @@ async def decide_privacy_request(
         and request.request_type
         in {PrivacyRequestType.ANONYMIZATION, PrivacyRequestType.ERASURE}
     ):
-        active_loans = await _active_loans(session, request.user_id)
-        if active_loans:
+        active_loan_count = await active_loans(session, request.user_id)
+        if active_loan_count:
             request.status = PrivacyRequestStatus.PARTIALLY_FULFILLED
             request.resolution = (
                 'A anonimização aguarda a devolução dos empréstimos ativos.'
             )
         else:
             target = await session.scalar(
-                select(User).where(User.id == request.user_id)
+                select(User)
+                .where(User.id == request.user_id)
+                .with_for_update()
             )
             if target:
-                await _anonymize_user(session, target)
+                await anonymize_user(session, target)
                 record_activity(
                     session,
                     user,

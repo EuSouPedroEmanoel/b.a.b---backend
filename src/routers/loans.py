@@ -39,6 +39,7 @@ from src.schemas import (
 from src.security import RoleChecker, get_current_user
 from src.services.administrative_activity import record_activity
 from src.services.book_catalog import public_book, resolve_one
+from src.services.privacy import reprocess_pending_anonymization
 from src.utils.cpf import cpf_collision_guard, cpf_lookup_digest
 from src.utils.pagination import paginate
 from src.utils.reservation_queue import (
@@ -402,6 +403,7 @@ async def return_loan(
         school_id=loan.school_id,
         summary=f'Empréstimo #{loan.id} devolvido.',
     )
+    await reprocess_pending_anonymization(session, loan.user_id)
 
     await session.commit()
     await session.refresh(loan)

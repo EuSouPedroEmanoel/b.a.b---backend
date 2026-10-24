@@ -37,9 +37,6 @@ def upgrade() -> None:
         'cancelled',
         name='privacyrequeststatus',
     )
-    privacy_mode.create(op.get_bind(), checkfirst=True)
-    request_type.create(op.get_bind(), checkfirst=True)
-    request_status.create(op.get_bind(), checkfirst=True)
     op.create_table(
         'school_privacy_policies',
         sa.Column('school_id', sa.Integer(), nullable=False),
