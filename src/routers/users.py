@@ -54,7 +54,6 @@ from src.services.account_activation import (
     verify_activation_hash,
 )
 from src.services.administrative_activity import record_activity
-from src.settings import Settings
 from src.utils.cpf import (
     classify_cpf_candidates,
     cpf_collision_guard,
@@ -84,7 +83,6 @@ UserAdministrationOnly = Annotated[
     Depends(RoleChecker([UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN])),
 ]
 UserReaders = UserAdministrationOnly
-settings = Settings()
 
 
 def _invitation_payload(
@@ -466,26 +464,7 @@ async def read_users(
 
 @router.get('/me', status_code=HTTPStatus.OK, response_model=CurrentUserPublic)
 async def read_current_user(current_user: CurrentUser):
-    return {
-        **CurrentUserPublic.model_validate(current_user).model_dump(),
-        'terms_current_version': settings.TERMS_VERSION,
-    }
-
-
-@router.post('/me/terms-acceptance', response_model=CurrentUserPublic)
-async def accept_current_user_terms(
-    session: Session,
-    current_user: CurrentUser,
-):
-    current_user.terms_accepted_version = settings.TERMS_VERSION
-    current_user.terms_accepted_at = datetime.utcnow()
-    session.add(current_user)
-    await session.commit()
-    await session.refresh(current_user)
-    return {
-        'terms_current_version': settings.TERMS_VERSION,
-        **CurrentUserPublic.model_validate(current_user).model_dump(),
-    }
+    return CurrentUserPublic.model_validate(current_user)
 
 
 async def _managed_status_target(

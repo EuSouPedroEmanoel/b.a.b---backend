@@ -259,9 +259,6 @@ class CurrentUserPublic(BaseModel):
     school_allows_student_restricted_availability: bool = False
     is_active: bool
     account_status: AccountStatus
-    terms_accepted_version: str | None = None
-    terms_accepted_at: datetime | None = None
-    terms_current_version: str | None = None
     administrative_capabilities: list[AdministrativeCapability] = []
 
     model_config = ConfigDict(from_attributes=True)

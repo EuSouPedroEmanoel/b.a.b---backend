@@ -278,12 +278,6 @@ class User:
     auth_version: Mapped[int] = mapped_column(
         kw_only=True, default=0, nullable=False
     )
-    terms_accepted_version: Mapped[str | None] = mapped_column(
-        String(40), kw_only=True, default=None, nullable=True
-    )
-    terms_accepted_at: Mapped[datetime | None] = mapped_column(
-        kw_only=True, default=None, nullable=True
-    )
     created_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now()
     )

@@ -283,30 +283,21 @@ def test_read_current_user_rejects_invalid_and_missing_tokens(client):
     assert missing.json() == {'detail': 'Not authenticated'}
 
 
-def test_terms_acceptance_is_versioned_and_persisted(
-    client, student, student_token
+def test_current_user_does_not_expose_terms_acceptance(
+    client, student_token
 ):
-    before = client.get(
+    response = client.get(
         '/users/me', headers={'Authorization': f'Bearer {student_token}'}
     )
-    assert before.status_code == HTTPStatus.OK
-    assert before.json()['terms_accepted_version'] is None
-    assert before.json()['terms_current_version'] == 'v1'
 
-    accepted = client.post(
+    assert response.status_code == HTTPStatus.OK
+    assert 'terms_accepted_version' not in response.json()
+    assert 'terms_accepted_at' not in response.json()
+    assert 'terms_current_version' not in response.json()
+    assert client.post(
         '/users/me/terms-acceptance',
         headers={'Authorization': f'Bearer {student_token}'},
-    )
-    assert accepted.status_code == HTTPStatus.OK
-    assert accepted.json()['terms_accepted_version'] == 'v1'
-    assert accepted.json()['terms_accepted_at'] is not None
-
-    repeated = client.post(
-        '/users/me/terms-acceptance',
-        headers={'Authorization': f'Bearer {student_token}'},
-    )
-    assert repeated.status_code == HTTPStatus.OK
-    assert repeated.json()['terms_accepted_version'] == 'v1'
+    ).status_code == HTTPStatus.NOT_FOUND
 
 
 def test_cannot_change_own_account_situation(client, user, token):

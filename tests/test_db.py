@@ -37,8 +37,6 @@ async def test_create_user(session: AsyncSession, mock_db_time):
         'account_status': AccountStatus.ACTIVE,
         'activated_at': None,
             'auth_version': 0,
-            'terms_accepted_version': None,
-            'terms_accepted_at': None,
             'school': None,
         'created_at': time,
         'updated_at': time,
