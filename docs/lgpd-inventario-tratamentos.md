@@ -13,7 +13,7 @@ contratos ou do responsável pelo tratamento.
 | Operador do sistema | Plataforma que processa dados em nome da escola | Formalizar contrato, instruções e responsabilidades |
 | Escopo de isolamento | Usuários, empréstimos, reservas, políticas e solicitações usam a escola quando aplicável | Validar a matriz de papéis com cada escola |
 | Encarregado/canal | E-mail institucional configurável por escola | Cadastrar o endereço real de cada escola |
-| Público infantojuvenil | O modelo possui alunos e turma | Validar melhor interesse e responsável legal conforme o caso |
+| Público infantojuvenil | O modelo possui alunos e turma; o sistema informa salvaguardas sem cadastrar responsáveis | A escola define o vínculo, a validação institucional, o melhor interesse e a participação do responsável conforme o caso |
 
 ## Categorias e finalidades
 
@@ -52,6 +52,10 @@ escola antes do uso com dados reais.
 - Solicitações, exportações, decisões e alterações de política geram auditoria
   minimizada.
 - O aviso público é informativo e não registra visualização como consentimento.
+- O sistema não cadastra nem autentica responsáveis legais; a escola mantém esse
+  vínculo e valida solicitações de titulares menores conforme sua política.
+- O produto não cria consentimento genérico e não transforma o acesso à
+  biblioteca em confirmação de leitura ou consentimento.
 
 ## Decisões que desbloqueiam LGPD-03 e LGPD-04
 
