@@ -16,6 +16,7 @@ from src.routers import (
     copies,
     favorites,
     genres,
+    images,
     library_calendar,
     loans,
     privacy,
@@ -74,6 +75,7 @@ async def rate_limit_handler(request, exc):
 
 
 app.include_router(auth.router)
+app.include_router(images.router)
 app.include_router(privacy.router)
 app.include_router(account_activation.router)
 app.include_router(

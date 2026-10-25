@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_MINUTES: int = 1440
     SESSION_COOKIE_SECURE: bool | None = None
     SESSION_COOKIE_SAMESITE: str = 'lax'
+    IMAGE_PROXY_ALLOWED_HOSTS: str = (
+        'books.google.com,books.googleusercontent.com,images.google.com,'
+        'images.googleapis.com,lh3.googleusercontent.com,covers.openlibrary.org'
+    )
     ACTIVATION_EXPIRE_DAYS: int = 7
     ACTIVATION_USER_ATTEMPTS: int = 5
     ACTIVATION_ORIGIN_ATTEMPTS: int = 20
@@ -63,3 +67,11 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(',') if origin.strip()]
+
+    @property
+    def image_proxy_allowed_hosts(self) -> set[str]:
+        return {
+            host.strip().lower()
+            for host in self.IMAGE_PROXY_ALLOWED_HOSTS.split(',')
+            if host.strip()
+        }
