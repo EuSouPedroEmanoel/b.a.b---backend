@@ -67,4 +67,8 @@ escola antes do uso com dados reais.
 
 Os prazos aprovados são implementados como regras fixas no serviço diário de
 retenção, com bloqueios de preservação, métricas não pessoais e testes de
-expurgo. O sistema não cria uma camada genérica de consentimentos.
+expurgo. O scheduler do ambiente deve executar
+`poetry run task privacy-retention` uma vez ao dia, com uma única execução
+concorrente e alerta em caso de falha. O contrato operacional está em
+[`docs/lgpd-operacao.md`](lgpd-operacao.md). O sistema não cria uma camada
+genérica de consentimentos.

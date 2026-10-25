@@ -54,6 +54,20 @@ poetry run task lint
 poetry run task test
 ```
 
+## Retenção LGPD
+
+A limpeza de retenção é executada pela aplicação e deve ser agendada pelo
+ambiente uma vez por dia:
+
+```bash
+poetry run task privacy-retention
+```
+
+O comando é idempotente para reexecuções sequenciais, retorna somente métricas
+agregadas e não recebe dados pessoais. Consulte
+[`docs/lgpd-operacao.md`](docs/lgpd-operacao.md) para o contrato do scheduler,
+alertas e checklist de implantação.
+
 ## Configuração e segurança
 
 Defina `SECRET_KEY`, `CPF_HMAC_SECRET`, credenciais do banco e demais variáveis por ambiente. Nunca versione segredos, tokens ou dados reais. Seeds de desenvolvimento devem ser usados apenas em ambiente isolado.
