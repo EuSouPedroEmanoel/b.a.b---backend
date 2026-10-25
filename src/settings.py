@@ -43,6 +43,8 @@ class Settings(BaseSettings):
 
         if self.PUBLIC_WEB_URL.startswith(('http://localhost', 'http://127.0.0.1')):
             raise ValueError('PUBLIC_WEB_URL must point to the production frontend')
+        if not self.PUBLIC_WEB_URL.startswith('https://'):
+            raise ValueError('PUBLIC_WEB_URL must use HTTPS in production')
         if not self.SUPER_ADMIN_USERNAME or not self.SUPER_ADMIN_PASSWORD:
             raise ValueError('Super admin credentials are required in production')
         if not self.cors_origins:
@@ -52,6 +54,8 @@ class Settings(BaseSettings):
             for origin in self.cors_origins
         ):
             raise ValueError('CORS_ORIGINS cannot contain local development origins')
+        if any(not origin.startswith('https://') for origin in self.cors_origins):
+            raise ValueError('CORS_ORIGINS must use HTTPS in production')
         if self.SESSION_COOKIE_SAMESITE not in {'lax', 'strict', 'none'}:
             raise ValueError('SESSION_COOKIE_SAMESITE must be lax, strict or none')
         return self

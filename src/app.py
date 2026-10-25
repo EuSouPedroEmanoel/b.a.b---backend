@@ -66,6 +66,29 @@ async def csrf_cookie_middleware(request, call_next):
     return await call_next(request)
 
 
+@app.middleware('http')
+async def security_headers_middleware(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Referrer-Policy', 'no-referrer')
+    response.headers.setdefault(
+        'Permissions-Policy', 'camera=(), microphone=(), geolocation=()'
+    )
+    if request.url.path not in {'/docs', '/redoc', '/openapi.json'}:
+        response.headers.setdefault(
+            'Content-Security-Policy',
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        )
+    if settings.ENVIRONMENT.lower() == 'production':
+        response.headers.setdefault(
+            'Strict-Transport-Security', 'max-age=31536000; includeSubDomains'
+        )
+    if request.url.path.startswith(('/auth/', '/privacy/me')):
+        response.headers.setdefault('Cache-Control', 'no-store')
+    return response
+
+
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request, exc):
     return JSONResponse(

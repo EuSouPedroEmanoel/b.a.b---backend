@@ -9,6 +9,11 @@ def test_root_deve_retornar_status_publico(client):
         'name': 'Base de Acesso Bibliotecário API',
         'status': 'online',
     }
+    assert response.headers['x-content-type-options'] == 'nosniff'
+    assert response.headers['x-frame-options'] == 'DENY'
+    assert response.headers['referrer-policy'] == 'no-referrer'
+    assert response.headers['permissions-policy']
+    assert response.headers['content-security-policy']
 
 
 def test_rate_limit_handler():
@@ -83,3 +88,22 @@ def test_production_settings_reject_local_cors_origin(monkeypatch):
         assert 'CORS_ORIGINS' in str(exc)
     else:
         raise AssertionError('Local development origins must be rejected')
+
+
+def test_production_settings_reject_http_public_url(monkeypatch):
+    from pydantic import ValidationError
+
+    from src.settings import Settings
+
+    monkeypatch.setenv('ENVIRONMENT', 'production')
+    monkeypatch.setenv('PUBLIC_WEB_URL', 'http://biblioteca.example')
+    monkeypatch.setenv('CORS_ORIGINS', 'https://biblioteca.example')
+    monkeypatch.setenv('SUPER_ADMIN_USERNAME', 'production-admin')
+    monkeypatch.setenv('SUPER_ADMIN_PASSWORD', 'a-strong-production-password')
+
+    try:
+        Settings()
+    except ValidationError as exc:
+        assert 'PUBLIC_WEB_URL' in str(exc)
+    else:
+        raise AssertionError('HTTP public URLs must be rejected')
