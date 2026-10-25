@@ -183,6 +183,45 @@ def test_guest_expired_and_invalid_tokens_are_rejected(client, school):
 
 
 @pytest.mark.asyncio
+async def test_guest_claims_and_inactive_school_are_rejected(
+    client, school, session
+):
+    settings = Settings()
+    invalid_claims = encode(
+        {
+            'sub': 'guest',
+            'role': 'student',
+            'school_code': school.code,
+            'type': 'guest',
+            'exp': datetime.now(tz=ZoneInfo('UTC')) + timedelta(minutes=5),
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    assert client.get('/books/', headers=_auth(invalid_claims)).status_code == (
+        HTTPStatus.UNAUTHORIZED
+    )
+
+    school.is_active = False
+    session.add(school)
+    await session.commit()
+    inactive_claims = encode(
+        {
+            'sub': 'guest',
+            'role': 'guest',
+            'school_code': school.code,
+            'type': 'guest',
+            'exp': datetime.now(tz=ZoneInfo('UTC')) + timedelta(minutes=5),
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    assert client.get('/books/', headers=_auth(inactive_claims)).status_code == (
+        HTTPStatus.UNAUTHORIZED
+    )
+
+
+@pytest.mark.asyncio
 async def test_guest_token_for_inactive_or_unknown_school_is_rejected(
     client, school, session
 ):

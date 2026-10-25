@@ -116,9 +116,14 @@ async def get_current_user(
         headers={'WWW-Authenticate': 'Bearer'},
     )
 
-    token = token or request.cookies.get('access_token')
-    if not token:
-        raise credential_exception
+    cookie_token = request.cookies.get('access_token')
+    if not token and not cookie_token:
+        raise HTTPException(
+            status_code=HTTPStatus.UNAUTHORIZED,
+            detail='Not authenticated',
+            headers={'WWW-Authenticate': 'Bearer'},
+        )
+    token = token or cookie_token
 
     try:  # noqa: PLW0717
         payload = decode(

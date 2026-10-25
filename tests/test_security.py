@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi import HTTPException
 from jwt import decode, encode
+from sqlalchemy import update
 
 from src.models import UserRole
 from src.security import (
@@ -47,6 +48,26 @@ def test_get_current_user_not_found(client):
     assert response.status_code == HTTPStatus.UNAUTHORIZED
     assert response.json() == {'detail': 'Could not validate credentials'}
     assert response.headers['WWW-Authenticate'] == 'Bearer'
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_rejects_inactive_school(
+    client, user, school, session
+):
+    await session.execute(
+        update(type(school)).where(type(school).id == school.id).values(
+            is_active=False
+        )
+    )
+    await session.commit()
+
+    response = client.get(
+        '/users/me',
+        headers={'Authorization': f'Bearer {create_access_token(data={"sub": user.username})}'},
+    )
+
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert response.json() == {'detail': 'School is inactive'}
 
 
 def test_get_current_user_without_username(client):
