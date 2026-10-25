@@ -35,6 +35,39 @@ def test_get_token_by_username(client, user):
     assert response.json()['refresh_token']
 
 
+def test_browser_session_uses_cookies_and_csrf(client, user):
+    login = client.post(
+        '/auth/token',
+        data={'username': user.username, 'password': user.clean_password},
+    )
+    assert login.status_code == HTTPStatus.OK
+    set_cookie = login.headers.get_list('set-cookie')
+    assert any('access_token=' in value and 'HttpOnly' in value for value in set_cookie)
+    assert any('refresh_token=' in value and 'Path=/auth' in value for value in set_cookie)
+    assert any('csrf_token=' in value and 'HttpOnly' not in value for value in set_cookie)
+
+    session = client.get('/auth/session')
+    assert session.status_code == HTTPStatus.OK
+    assert session.json()['user']['username'] == user.username
+
+    csrf = client.cookies.get('csrf_token')
+    assert csrf
+    blocked = client.post(
+        '/privacy/me/requests',
+        json={'request_type': 'information'},
+    )
+    assert blocked.status_code == HTTPStatus.FORBIDDEN
+
+    refreshed = client.post(
+        '/auth/refresh', headers={'X-CSRF-Token': csrf}
+    )
+    assert refreshed.status_code == HTTPStatus.OK
+    logged_out = client.post(
+        '/auth/logout', headers={'X-CSRF-Token': client.cookies.get('csrf_token')}
+    )
+    assert logged_out.status_code == HTTPStatus.OK
+
+
 @pytest.mark.asyncio
 async def test_get_token_by_school_identifier(client, session, user, school):
     target = await session.scalar(select(User).where(User.id == user.id))

@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int
     GUEST_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_MINUTES: int = 1440
+    SESSION_COOKIE_SECURE: bool | None = None
+    SESSION_COOKIE_SAMESITE: str = 'lax'
     ACTIVATION_EXPIRE_DAYS: int = 7
     ACTIVATION_USER_ATTEMPTS: int = 5
     ACTIVATION_ORIGIN_ATTEMPTS: int = 20
@@ -46,7 +48,17 @@ class Settings(BaseSettings):
             for origin in self.cors_origins
         ):
             raise ValueError('CORS_ORIGINS cannot contain local development origins')
+        if self.SESSION_COOKIE_SAMESITE not in {'lax', 'strict', 'none'}:
+            raise ValueError('SESSION_COOKIE_SAMESITE must be lax, strict or none')
         return self
+
+    @property
+    def session_cookie_secure(self) -> bool:
+        return (
+            self.ENVIRONMENT.lower() == 'production'
+            if self.SESSION_COOKIE_SECURE is None
+            else self.SESSION_COOKIE_SECURE
+        )
 
     @property
     def cors_origins(self) -> list[str]:

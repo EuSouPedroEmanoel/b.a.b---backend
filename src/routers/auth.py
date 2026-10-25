@@ -1,9 +1,10 @@
+import secrets
 from datetime import datetime
 from http import HTTPStatus
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from jwt import DecodeError, ExpiredSignatureError, decode
 from sqlalchemy import select
@@ -13,10 +14,12 @@ from src.database import get_session
 from src.limiter import limiter
 from src.models import AccountStatus, RevokedToken, School, User
 from src.schemas import (
+    CurrentUserPublic,
     GuestAccessRequest,
     GuestSchoolPublic,
     Message,
     RefreshRequest,
+    SessionPublic,
     Token,
     TokenPair,
 )
@@ -25,6 +28,7 @@ from src.security import (
     create_guest_token,
     create_token_pair,
     get_current_user,
+    is_guest,
     verify_password,
 )
 from src.settings import Settings
@@ -60,6 +64,7 @@ async def create_guest_access_token(
     request: Request,
     payload: GuestAccessRequest,
     session: Session,
+    response: Response,
 ):
     school = await session.scalar(
         select(School).where(
@@ -71,8 +76,10 @@ async def create_guest_access_token(
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND, detail='School not found'
         )
+    access_token = create_guest_token(school.code)
+    _set_session_cookies(response, access_token)
     return {
-        'access_token': create_guest_token(school.code),
+        'access_token': access_token,
         'token_type': 'Bearer',
     }
 
@@ -81,6 +88,7 @@ async def create_guest_access_token(
 @limiter.limit('100/minute')
 async def login_for_access_token(
     request: Request,
+    response: Response,
     form_data: OAuthForm,
     session: Session,
     school_code: Annotated[str | None, Form()] = None,
@@ -137,6 +145,7 @@ async def login_for_access_token(
     access_token, refresh_token, _jti, _exp = create_token_pair(
         user.username, user.auth_version
     )
+    _set_session_cookies(response, access_token, refresh_token)
     return {
         'access_token': access_token,
         'refresh_token': refresh_token,
@@ -144,14 +153,75 @@ async def login_for_access_token(
     }
 
 
+def _set_session_cookies(
+    response: Response, access_token: str, refresh_token: str | None = None
+) -> None:
+    common = {
+        'httponly': True,
+        'secure': settings.session_cookie_secure,
+        'samesite': settings.SESSION_COOKIE_SAMESITE,
+    }
+    response.set_cookie('access_token', access_token, path='/', **common)
+    if refresh_token is not None:
+        response.set_cookie(
+            'refresh_token', refresh_token, path='/auth', **common
+        )
+    response.set_cookie(
+        'csrf_token',
+        secrets.token_urlsafe(32),
+        path='/',
+        httponly=False,
+        secure=settings.session_cookie_secure,
+        samesite=settings.SESSION_COOKIE_SAMESITE,
+    )
+
+
+def _require_cookie_csrf(request: Request) -> None:
+    expected = request.cookies.get('csrf_token')
+    provided = request.headers.get('X-CSRF-Token')
+    if not expected or not provided or not secrets.compare_digest(
+        expected, provided
+    ):
+        raise HTTPException(HTTPStatus.FORBIDDEN, 'CSRF token inválido')
+
+
+@router.get('/session', response_model=SessionPublic)
+async def read_session(user=Depends(get_current_user)):
+    if is_guest(user):
+        return {
+            'user': {
+                'id': 0,
+                'username': 'Visitante',
+                'name': 'Visitante',
+                'role': 'guest',
+                'school_id': user.school_id,
+                'school_code': user.school_code,
+                'school_name': None,
+                'is_active': True,
+            }
+        }
+    return {'user': CurrentUserPublic.model_validate(user).model_dump()}
+
+
 @router.post('/refresh', response_model=TokenPair)
 async def refresh_token_pair(
-    payload: RefreshRequest,
+    request: Request,
+    response: Response,
     session: Session,
+    payload: RefreshRequest | None = None,
 ):
+    refresh_token = (
+        payload.refresh_token
+        if payload
+        else request.cookies.get('refresh_token')
+    )
+    if not refresh_token:
+        raise HTTPException(HTTPStatus.UNAUTHORIZED, 'Refresh token ausente')
+    if payload is None:
+        _require_cookie_csrf(request)
     try:
         decoded = decode(
-            payload.refresh_token,
+            refresh_token,
             settings.SECRET_KEY,
             algorithms=[settings.ALGORITHM],
         )
@@ -218,6 +288,7 @@ async def refresh_token_pair(
         user.username, user.auth_version
     )
     await session.commit()
+    _set_session_cookies(response, access_token, new_refresh)
     return {
         'access_token': access_token,
         'refresh_token': new_refresh,
@@ -237,13 +308,24 @@ async def refresh_access_token(
 
 @router.post('/logout', response_model=Message)
 async def logout(
-    payload: RefreshRequest,
+    request: Request,
+    response: Response,
     session: Session,
     current_user: Annotated[User, Depends(get_current_user)],
+    payload: RefreshRequest | None = None,
 ):
+    refresh_token = (
+        payload.refresh_token
+        if payload
+        else request.cookies.get('refresh_token')
+    )
+    if not refresh_token:
+        raise HTTPException(HTTPStatus.UNAUTHORIZED, 'Refresh token ausente')
+    if payload is None:
+        _require_cookie_csrf(request)
     try:
         decoded = decode(
-            payload.refresh_token,
+            refresh_token,
             settings.SECRET_KEY,
             algorithms=[settings.ALGORITHM],
         )
@@ -266,9 +348,15 @@ async def logout(
         select(RevokedToken).where(RevokedToken.jti == jti)
     )
     if existing:
+        response.delete_cookie('access_token', path='/')
+        response.delete_cookie('refresh_token', path='/auth')
+        response.delete_cookie('csrf_token', path='/')
         return {'message': 'Already logged out'}
 
     expires_at = datetime.fromtimestamp(exp_ts, tz=ZoneInfo('UTC'))
     session.add(RevokedToken(jti=jti, expires_at=expires_at))
     await session.commit()
+    response.delete_cookie('access_token', path='/')
+    response.delete_cookie('refresh_token', path='/auth')
+    response.delete_cookie('csrf_token', path='/')
     return {'message': 'Logged out successfully'}

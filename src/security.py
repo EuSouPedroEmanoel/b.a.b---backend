@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from http import HTTPStatus
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 from jwt import DecodeError, ExpiredSignatureError, decode, encode
 from pwdlib import PasswordHash
@@ -18,7 +18,7 @@ from src.settings import Settings
 
 pwd_context = PasswordHash.recommended()
 settings = Settings()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl='auth/token')
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl='auth/token', auto_error=False)
 
 
 @dataclass(frozen=True)
@@ -106,14 +106,19 @@ async def _is_token_revoked(session: AsyncSession, jti: str) -> bool:
 
 
 async def get_current_user(
+    request: Request,
     session: AsyncSession = Depends(get_session),
-    token: str = Depends(oauth2_scheme),
+    token: str | None = Depends(oauth2_scheme),
 ) -> User | GuestPrincipal:
     credential_exception = HTTPException(
         status_code=HTTPStatus.UNAUTHORIZED,
         detail='Could not validate credentials',
         headers={'WWW-Authenticate': 'Bearer'},
     )
+
+    token = token or request.cookies.get('access_token')
+    if not token:
+        raise credential_exception
 
     try:  # noqa: PLW0717
         payload = decode(
@@ -155,7 +160,10 @@ async def get_current_user(
 
     sttm = (
         select(User)
-        .options(selectinload(User.capability_assignments))
+        .options(
+            selectinload(User.capability_assignments),
+            selectinload(User.school),
+        )
         .where(User.username == subject_username)
         .execution_options(populate_existing=True)
     )

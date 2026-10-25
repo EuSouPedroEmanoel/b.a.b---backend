@@ -625,6 +625,11 @@ class TokenPair(BaseModel):
     refresh_token: str
 
 
+class SessionPublic(BaseModel):
+    authenticated: bool = True
+    user: dict
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str
 

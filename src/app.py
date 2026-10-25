@@ -47,6 +47,24 @@ app.add_middleware(
 )
 
 
+@app.middleware('http')
+async def csrf_cookie_middleware(request, call_next):
+    if (
+        request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}
+        and request.cookies.get('access_token')
+        and not request.headers.get('Authorization')
+        and not request.url.path.startswith(('/auth/', '/account-activation/'))
+    ):
+        expected = request.cookies.get('csrf_token')
+        provided = request.headers.get('X-CSRF-Token')
+        if not expected or not provided or expected != provided:
+            return JSONResponse(
+                status_code=HTTPStatus.FORBIDDEN,
+                content={'detail': 'CSRF token inválido'},
+            )
+    return await call_next(request)
+
+
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request, exc):
     return JSONResponse(
