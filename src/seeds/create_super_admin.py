@@ -37,6 +37,7 @@ async def seed_super_admin():
 
         user = User(
             username=settings.SUPER_ADMIN_USERNAME,
+            school_identifier=None,
             name=settings.SUPER_ADMIN_USERNAME,
             cpf_lookup_hash=cpf_storage_values('12345678909')[0],
             cpf_collision_guard=cpf_storage_values('12345678909')[1],

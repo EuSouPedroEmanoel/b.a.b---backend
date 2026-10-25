@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import Enum
 
 from sqlalchemy import (
@@ -224,12 +224,20 @@ class User:
             'cpf_collision_guard',
             name='uq_users_cpf_lookup_collision_guard',
         ),
+        UniqueConstraint(
+            'school_id',
+            'school_identifier',
+            name='uq_users_school_identifier',
+        ),
     )
 
     id: Mapped[int] = mapped_column(
         init=False, primary_key=True, autoincrement=True
     )
     username: Mapped[str] = mapped_column(unique=True, nullable=False)
+    school_identifier: Mapped[str | None] = mapped_column(
+        String(120), kw_only=True, default=None, nullable=True
+    )
     name: Mapped[str] = mapped_column(
         String(120), kw_only=True, default='', nullable=False
     )
@@ -277,6 +285,9 @@ class User:
     )
     auth_version: Mapped[int] = mapped_column(
         kw_only=True, default=0, nullable=False
+    )
+    deactivated_at: Mapped[datetime | None] = mapped_column(
+        kw_only=True, default=None, nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now()
@@ -1084,7 +1095,12 @@ class Loan:
         init=False, primary_key=True, autoincrement=True
     )
     copy_id: Mapped[int] = mapped_column(ForeignKey('book_copies.id'))
-    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey('users.id', ondelete='SET NULL'),
+        kw_only=True,
+        default=None,
+        nullable=True,
+    )
     school_id: Mapped[int] = mapped_column(ForeignKey('schools.id'))
     borrowed_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now()
@@ -1108,7 +1124,7 @@ class Loan:
     )
 
     copy: Mapped[BookCopy] = relationship(init=False, lazy='selectin')
-    borrower: Mapped[User] = relationship(
+    borrower: Mapped[User | None] = relationship(
         init=False, foreign_keys='Loan.user_id', lazy='selectin'
     )
     school: Mapped[School] = relationship(init=False, lazy='selectin')
@@ -1132,12 +1148,12 @@ class Loan:
         )
 
     @property
-    def borrower_username(self) -> str:
-        return self.borrower.username
+    def borrower_username(self) -> str | None:
+        return self.borrower.username if self.borrower else None
 
     @property
     def borrower_cpf_masked(self) -> str | None:
-        return self.borrower.cpf_masked
+        return self.borrower.cpf_masked if self.borrower else None
 
 
 @table_registry.mapped_as_dataclass()
@@ -1303,6 +1319,9 @@ class SchoolPrivacyPolicy:
         default=PrivacyProcessingMode.AUTOMATIC_ANONYMIZATION,
         nullable=False,
     )
+    privacy_contact_email: Mapped[str | None] = mapped_column(
+        String(320), kw_only=True, default=None, nullable=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now(), onupdate=func.now()
     )
@@ -1315,8 +1334,12 @@ class PrivacyRequest:
     id: Mapped[int] = mapped_column(
         init=False, primary_key=True, autoincrement=True
     )
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey('users.id'), nullable=False, index=True
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey('users.id', ondelete='SET NULL'),
+        kw_only=True,
+        default=None,
+        nullable=True,
+        index=True,
     )
     school_id: Mapped[int | None] = mapped_column(
         ForeignKey('schools.id', ondelete='SET NULL'),
@@ -1359,4 +1382,9 @@ class PrivacyRequest:
     )
     updated_at: Mapped[datetime] = mapped_column(
         init=False, server_default=func.now(), onupdate=func.now()
+    )
+    due_at: Mapped[datetime] = mapped_column(
+        kw_only=True,
+        default_factory=lambda: datetime.utcnow() + timedelta(days=15),
+        nullable=False,
     )

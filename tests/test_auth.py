@@ -1,6 +1,10 @@
 from http import HTTPStatus
 
+import pytest
 from freezegun import freeze_time
+from sqlalchemy import select
+
+from src.models import User
 
 
 def test_get_token(client, user):
@@ -28,6 +32,25 @@ def test_get_token_by_username(client, user):
     assert response.json()['token_type'] == 'Bearer'
     assert response.json()['access_token']
     assert response.json()['refresh_token']
+
+
+@pytest.mark.asyncio
+async def test_get_token_by_school_identifier(client, session, user, school):
+    target = await session.scalar(select(User).where(User.id == user.id))
+    target.school_identifier = 'matricula-42'
+    await session.commit()
+
+    response = client.post(
+        '/auth/token',
+        data={
+            'username': 'matricula-42',
+            'school_code': school.code,
+            'password': user.clean_password,
+        },
+    )
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()['access_token']
 
 
 def test_get_token_by_cpf(client, school, school_admin, school_admin_token):

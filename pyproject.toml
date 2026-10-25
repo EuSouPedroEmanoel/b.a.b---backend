@@ -75,6 +75,7 @@ format = 'ruff format'
 run = 'uvicorn src.app:app --reload'
 pre_test = 'task lint'
 test = 'pytest -x --cov=src --cov-report=term-missing --cov-fail-under=95 --cov-config=pyproject.toml'
+privacy-retention = 'python -m src.jobs.privacy_retention'
 post_test = 'coverage html'
 
 [tool.poetry]

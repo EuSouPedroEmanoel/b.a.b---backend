@@ -237,6 +237,7 @@ async def seed_users_rec(session: AsyncSession, schools: list[School]) -> dict[s
         extra = _student_fields(username) if role == UserRole.STUDENT else {}
         u = User(
             username=username,
+            school_identifier=username,
             name=_display_name(username, role),
             password=get_password_hash(REC_PASSWORD),
             role=role,
@@ -574,7 +575,7 @@ async def seed_recommendations(reset: bool = False):
         # super_admin
         super_admin = await session.scalar(select(User).where(User.username == DEV_SUPER_ADMIN["username"]))
         if not super_admin:
-            super_admin = User(username=DEV_SUPER_ADMIN["username"], name=DEV_SUPER_ADMIN["name"], **_cpf_fields(DEV_SUPER_ADMIN["username"]), password=get_password_hash(DEV_SUPER_ADMIN["password"]), role=UserRole.SUPER_ADMIN, school_id=None)
+            super_admin = User(username=DEV_SUPER_ADMIN["username"], school_identifier=None, name=DEV_SUPER_ADMIN["name"], **_cpf_fields(DEV_SUPER_ADMIN["username"]), password=get_password_hash(DEV_SUPER_ADMIN["password"]), role=UserRole.SUPER_ADMIN, school_id=None)
             session.add(super_admin)
             await session.flush()
             await session.commit()

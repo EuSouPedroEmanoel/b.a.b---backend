@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from typing import Annotated
 
@@ -19,6 +19,7 @@ from src.models import (
     PrivacyRequestType,
     Reservation,
     ReservationStatus,
+    School,
     SchoolPrivacyPolicy,
     User,
     UserBookFavorite,
@@ -35,6 +36,7 @@ from src.schemas import (
     PrivacyRequestCreate,
     PrivacyRequestDecision,
     PrivacyRequestPublic,
+    PublicPrivacyPolicy,
 )
 from src.security import get_current_user, is_guest, verify_password
 from src.services.administrative_activity import record_activity
@@ -90,6 +92,18 @@ async def _verify_sensitive_password(user: User, password: str | None) -> None:
         raise HTTPException(
             HTTPStatus.UNAUTHORIZED, 'Confirmação de senha inválida'
         )
+
+
+async def _privacy_contact_email(
+    session: AsyncSession, school_id: int | None
+) -> str | None:
+    if school_id is None:
+        return None
+    return await session.scalar(
+        select(SchoolPrivacyPolicy.privacy_contact_email).where(
+            SchoolPrivacyPolicy.school_id == school_id
+        )
+    )
 
 
 @router.get('/me', response_model=PrivacyProfilePublic)
@@ -165,6 +179,9 @@ async def read_privacy_profile(session: Session, user: CurrentUser):
             'escola responsável.',
         ],
         'preservation': PRESERVATION,
+        'privacy_contact_email': await _privacy_contact_email(
+            session, user.school_id
+        ),
     }
 
 
@@ -310,6 +327,8 @@ async def create_privacy_request(
         school_id=user.school_id,
         request_type=payload.request_type,
         description=payload.description,
+        due_at=datetime.now(timezone.utc).replace(tzinfo=None)
+        + timedelta(days=15),
     )
     session.add(request)
     await session.flush()
@@ -457,20 +476,31 @@ async def update_privacy_policy(
             HTTPStatus.FORBIDDEN,
             'Apenas administradores podem alterar a política',
         )
+    if not payload.justification:
+        raise HTTPException(
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            'Informe a justificativa da alteração',
+        )
     policy = await session.scalar(
         select(SchoolPrivacyPolicy).where(
             SchoolPrivacyPolicy.school_id == school_id
         )
     )
-    old = (
-        policy.processing_mode.value
-        if policy
-        else PrivacyProcessingMode.AUTOMATIC_ANONYMIZATION.value
-    )
+    old = {
+        'processing_mode': (
+            policy.processing_mode.value
+            if policy
+            else PrivacyProcessingMode.AUTOMATIC_ANONYMIZATION.value
+        ),
+        'privacy_contact_email': (
+            policy.privacy_contact_email if policy else None
+        ),
+    }
     if policy is None:
         policy = SchoolPrivacyPolicy(school_id=school_id)
         session.add(policy)
     policy.processing_mode = payload.processing_mode
+    policy.privacy_contact_email = payload.privacy_contact_email
     record_activity(
         session,
         user,
@@ -479,16 +509,44 @@ async def update_privacy_policy(
         entity_id=school_id,
         school_id=school_id,
         changed_fields={
-            'processing_mode': {
-                'from': old,
-                'to': payload.processing_mode.value,
-            }
+            'from': old,
+            'to': {
+                'processing_mode': payload.processing_mode.value,
+                'privacy_contact_email': payload.privacy_contact_email,
+            },
         },
+        justification=payload.justification,
         summary='Política de privacidade da escola alterada',
     )
     await session.commit()
     await session.refresh(policy)
     return policy
+
+
+@router.get('/public/{school_code}', response_model=PublicPrivacyPolicy)
+async def read_public_privacy_policy(
+    school_code: str, session: Session
+):
+    row = await session.execute(
+        select(School, SchoolPrivacyPolicy)
+        .outerjoin(
+            SchoolPrivacyPolicy,
+            SchoolPrivacyPolicy.school_id == School.id,
+        )
+        .where(School.code == school_code.strip(), School.is_active.is_(True))
+    )
+    result = row.first()
+    if result is None:
+        raise HTTPException(HTTPStatus.NOT_FOUND, 'School not found')
+    school, policy = result
+    return {
+        'school_id': school.id,
+        'school_name': school.name,
+        'privacy_contact_email': (
+            policy.privacy_contact_email if policy else None
+        ),
+        'notice_version': '1.0.0',
+    }
 
 
 @router.get(
@@ -571,7 +629,11 @@ async def decide_privacy_request(
         and request.request_type
         in {PrivacyRequestType.ANONYMIZATION, PrivacyRequestType.ERASURE}
     ):
-        active_loan_count = await active_loans(session, request.user_id)
+        active_loan_count = (
+            await active_loans(session, request.user_id)
+            if request.user_id is not None
+            else 0
+        )
         if active_loan_count:
             request.status = PrivacyRequestStatus.PARTIALLY_FULFILLED
             request.resolution = (

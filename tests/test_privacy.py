@@ -36,6 +36,7 @@ async def test_privacy_profile_is_limited_to_authenticated_user(client, token):
         'sharing',
         'correction_guidance',
         'preservation',
+        'privacy_contact_email',
     }
     assert 'password' not in body['account']
     assert 'tokens' in body['security']
@@ -84,7 +85,10 @@ def test_librarian_cannot_change_school_privacy_policy(client, token, school):
     response = client.put(
         f'/privacy/schools/{school.id}/policy',
         headers=_headers(token),
-        json={'processing_mode': 'administrative_review'},
+        json={
+            'processing_mode': 'administrative_review',
+            'justification': 'Atualização da política institucional.',
+        },
     )
     assert response.status_code == HTTPStatus.FORBIDDEN
 
@@ -332,7 +336,10 @@ async def test_privacy_policy_update_and_admin_request_listing(
     updated = client.put(
         f'/privacy/schools/{school.id}/policy',
         headers=_headers(school_admin_token),
-        json={'processing_mode': 'administrative_review'},
+        json={
+            'processing_mode': 'administrative_review',
+            'justification': 'Atualização da política institucional.',
+        },
     )
     assert updated.status_code == HTTPStatus.OK
     assert updated.json()['processing_mode'] == 'administrative_review'
@@ -351,6 +358,30 @@ async def test_privacy_policy_update_and_admin_request_listing(
     )
     assert default_policy.status_code == HTTPStatus.OK
     assert default_policy.json()['processing_mode'] == 'automatic_anonymization'
+
+
+def test_public_privacy_policy_exposes_only_school_channel(
+    client, school, school_admin_token
+):
+    updated = client.put(
+        f'/privacy/schools/{school.id}/policy',
+        headers=_headers(school_admin_token),
+        json={
+            'processing_mode': 'automatic_anonymization',
+            'privacy_contact_email': 'privacidade@escola.example',
+            'justification': 'Cadastro do canal institucional.',
+        },
+    )
+    assert updated.status_code == HTTPStatus.OK
+
+    response = client.get(f'/privacy/public/{school.code}')
+    assert response.status_code == HTTPStatus.OK
+    assert response.json() == {
+        'school_id': school.id,
+        'school_name': school.name,
+        'privacy_contact_email': 'privacidade@escola.example',
+        'notice_version': '1.0.0',
+    }
 
 
 @pytest.mark.asyncio

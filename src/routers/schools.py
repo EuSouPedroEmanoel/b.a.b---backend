@@ -132,6 +132,7 @@ async def create_school_admin(
         )
     db_user = User(
         username=admin.username,
+        school_identifier=admin.school_identifier or admin.username,
         name=admin.name or admin.username,
         cpf_lookup_hash=lookup_hash,
         cpf_collision_guard=collision_guard,

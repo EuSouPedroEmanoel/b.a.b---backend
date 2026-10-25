@@ -144,6 +144,7 @@ async def seed_users(session: AsyncSession, schools: list[School]) -> dict:
             continue
         user = User(
             username=username,
+            school_identifier=username,
             name=_display_name(username, role),
             password=get_password_hash(DEV_PASSWORD),
             role=role,
@@ -637,6 +638,7 @@ async def seed_dev():
         if not super_admin:
             super_admin = User(
                 username=DEV_SUPER_ADMIN['username'],
+                school_identifier=None,
                 name=DEV_SUPER_ADMIN['name'],
                 **_cpf_fields(DEV_SUPER_ADMIN['username']),
                 password=get_password_hash(DEV_SUPER_ADMIN['password']),

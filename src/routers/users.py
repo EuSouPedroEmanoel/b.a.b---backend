@@ -252,6 +252,7 @@ async def create_user(
         )
     db_user = User(
         username=username,
+        school_identifier=user.school_identifier or username,
         name=user.name or user.username,
         cpf_lookup_hash=lookup_hash,
         cpf_collision_guard=collision_guard,
@@ -366,6 +367,7 @@ async def create_student(
     username = await _make_unique_username(session, payload.name, payload.cpf)
     db_user = User(
         username=username,
+        school_identifier=payload.school_identifier or username,
         name=payload.name,
         cpf_lookup_hash=lookup_hash,
         cpf_collision_guard=collision_guard,
@@ -547,6 +549,7 @@ async def change_user_situation(
         if payload.is_active
         else AccountStatus.DISABLED
     )
+    target.deactivated_at = None if payload.is_active else datetime.utcnow()
     # All currently issued access and refresh tokens become unusable.
     target.auth_version += 1
     session.add_all([
@@ -604,6 +607,9 @@ async def undo_user_situation(
     previous_account_status = target.account_status
     target.is_active = audit.previous_active
     target.account_status = AccountStatus(audit.previous_account_status)
+    target.deactivated_at = (
+        None if target.is_active else target.deactivated_at
+    )
     target.auth_version += 1
     session.add_all([
         target,

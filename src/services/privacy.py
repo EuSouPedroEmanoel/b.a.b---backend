@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,6 +46,7 @@ async def anonymize_user(session: AsyncSession, target: User) -> None:
     target.turma_letra = None
     target.password = None
     target.is_active = False
+    target.deactivated_at = target.deactivated_at or datetime.utcnow()
     target.auth_version += 1
     target.account_status = AccountStatus.DISABLED
     await session.execute(

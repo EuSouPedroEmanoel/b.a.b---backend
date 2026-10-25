@@ -103,6 +103,7 @@ async def _complete_activation(
     now = datetime.utcnow()
     user.password = get_password_hash(payload.password)
     user.account_status = AccountStatus.ACTIVE
+    user.deactivated_at = None
     user.activated_at = now
     user.auth_version += 1
     invitation.used_at = now

@@ -74,6 +74,7 @@ class PrivacyProfilePublic(BaseModel):
     sharing: list[str]
     correction_guidance: list[str]
     preservation: list[str]
+    privacy_contact_email: str | None = None
 
 
 class PrivacyExportRequest(BaseModel):
@@ -95,6 +96,7 @@ class PrivacyRequestPublic(BaseModel):
     school_id: int | None
     created_at: datetime
     updated_at: datetime
+    due_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -107,6 +109,7 @@ class PrivacyRequestDecision(BaseModel):
 class PrivacyPolicyPublic(BaseModel):
     school_id: int
     processing_mode: PrivacyProcessingMode
+    privacy_contact_email: str | None = None
     updated_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -114,6 +117,27 @@ class PrivacyPolicyPublic(BaseModel):
 
 class PrivacyPolicyUpdate(BaseModel):
     processing_mode: PrivacyProcessingMode
+    privacy_contact_email: str | None = Field(default=None, max_length=320)
+    justification: str | None = Field(default=None, max_length=1000)
+
+    @field_validator('privacy_contact_email')
+    @classmethod
+    def validate_privacy_email(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        normalized = value.strip()
+        if normalized.count('@') != 1 or any(
+            not part for part in normalized.split('@')
+        ):
+            raise ValueError('Informe um e-mail institucional válido')
+        return normalized
+
+
+class PublicPrivacyPolicy(BaseModel):
+    school_id: int
+    school_name: str
+    privacy_contact_email: str | None = None
+    notice_version: str
 
 
 class ApiStatus(BaseModel):
@@ -223,6 +247,7 @@ class UserSchema(BaseModel):
 
 class UserPublic(BaseModel):
     username: str
+    school_identifier: str | None = None
     name: str
     cpf_masked: str | None = None
     birthdate: date | None = None
@@ -250,6 +275,7 @@ class CurrentUserPublic(BaseModel):
 
     id: int
     username: str
+    school_identifier: str | None = None
     name: str
     role: UserRole
     school_id: int | None = None
@@ -330,6 +356,9 @@ class AdministrativeCapabilitiesPublic(BaseModel):
 
 class StaffCreateSchema(BaseModel):
     username: str | None = Field(default=None, min_length=1, max_length=120)
+    school_identifier: str | None = Field(
+        default=None, min_length=1, max_length=120
+    )
     name: str | None = Field(default=None, min_length=1, max_length=120)
     cpf: str
     role: UserRole = UserRole.LIBRARIAN
@@ -407,6 +436,9 @@ def validate_birthdate(dt: date) -> date:
 
 class StudentCreateSchema(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    school_identifier: str | None = Field(
+        default=None, min_length=1, max_length=120
+    )
     cpf: str
     birthdate: date
     turma_numero: int = Field(ge=1, le=12)
@@ -427,6 +459,9 @@ class StudentCreateSchema(BaseModel):
 
 class SchoolAdminCreateSchema(BaseModel):
     username: str = Field(min_length=1, max_length=120)
+    school_identifier: str | None = Field(
+        default=None, min_length=1, max_length=120
+    )
     name: str | None = Field(default=None, min_length=1, max_length=120)
     cpf: str
 
@@ -1015,7 +1050,7 @@ class LoanPublic(BaseModel):
     internal_code: str
     book_id: int
     book_title: str
-    borrower_username: str
+    borrower_username: str | None = None
     book_cover_url: str | None = None
     borrower_cpf_masked: str | None = None
     pickup_reservation_id: int | None = None

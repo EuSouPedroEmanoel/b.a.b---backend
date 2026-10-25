@@ -3,7 +3,7 @@ from http import HTTPStatus
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from jwt import DecodeError, ExpiredSignatureError, decode
 from sqlalchemy import select
@@ -83,13 +83,23 @@ async def login_for_access_token(
     request: Request,
     form_data: OAuthForm,
     session: Session,
+    school_code: Annotated[str | None, Form()] = None,
 ):
-    sttm = select(User).where(
-            (User.username == form_data.username)
-    )
+    if school_code:
+        sttm = (
+            select(User)
+            .join(School, School.id == User.school_id)
+            .where(
+                School.code == school_code.strip(),
+                School.is_active.is_(True),
+                User.school_identifier == form_data.username.strip(),
+            )
+        )
+    else:
+        sttm = select(User).where(User.username == form_data.username)
     user = await session.scalar(sttm)
 
-    if not user:
+    if not user and not school_code:
         # Leitores que usam CPF também podem autenticar por esse identificador.
         cpf = normalize_cpf(form_data.username)
         if cpf and validate_cpf(cpf):

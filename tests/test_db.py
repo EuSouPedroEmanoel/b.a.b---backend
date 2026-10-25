@@ -28,7 +28,8 @@ async def test_create_user(session: AsyncSession, mock_db_time):
 
     assert asdict(user) == {
         'id': 1,
-        'username': 'test',
+            'username': 'test',
+            'school_identifier': None,
         'name': 'Test User',
         'password': 'secret',
         'role': UserRole.SUPER_ADMIN,
@@ -37,6 +38,7 @@ async def test_create_user(session: AsyncSession, mock_db_time):
         'account_status': AccountStatus.ACTIVE,
         'activated_at': None,
             'auth_version': 0,
+            'deactivated_at': None,
             'school': None,
         'created_at': time,
         'updated_at': time,
