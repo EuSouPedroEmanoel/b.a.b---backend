@@ -67,6 +67,44 @@ escola antes do uso com dados reais.
 6. Confirmar se existe algum tratamento baseado em consentimento; se não
    existir, não criar uma camada genérica de consentimentos.
 
+## Situação da execução LGPD
+
+### Itens resolvidos no repositório
+
+- Central do titular, exportação JSON, solicitações, prazos e auditoria
+  minimizada.
+- Governança por escola, isolamento por `school_id`, canal institucional e
+  retenção idempotente diária.
+- Orientação para menores sem cadastro de responsáveis ou consentimento
+  genérico.
+- Sessão de navegador com cookies `HttpOnly`, proteção CSRF e compatibilidade
+  temporária com Bearer para clientes externos.
+- Headers de segurança, validação de HTTPS em produção e proxy controlado para
+  imagens externas.
+
+### Itens dependentes da escola
+
+- Definição das bases legais por finalidade e dos procedimentos para menores.
+- Cadastro do e-mail, responsável institucional e canal de ordens judiciais.
+- Aprovação dos serviços externos e dos prazos ou preservações específicos da
+  escola.
+
+### Itens dependentes da infraestrutura
+
+- TLS, secret manager, rotação de chaves, proxy reverso e CORS de produção.
+- Scheduler diário, alertas, backups, restauração e controle de acesso aos
+  logs.
+- Retenção de seis meses dos registros de acesso do Marco Civil quando
+  aplicável, com cadeia de custódia e preservação de incidentes.
+
+### Riscos ainda não demonstráveis apenas pelo repositório
+
+- Efetiva execução do scheduler e dos backups no ambiente produtivo.
+- Formalização contratual entre escola e plataforma e decisões da ANPD ou
+  assessoria jurídica para casos concretos.
+- Validação institucional do melhor interesse e da representação de cada
+  titular menor.
+
 ## Próximo incremento técnico
 
 Os prazos aprovados são implementados como regras fixas no serviço diário de

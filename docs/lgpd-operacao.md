@@ -47,6 +47,32 @@ ignorar preservações legais.
 - logs do scheduler devem seguir o mesmo prazo e as mesmas restrições de
   minimização aplicáveis aos registros técnicos.
 
+## Incidentes, ordens e cadeia de custódia
+
+Incidentes ou ordens de preservação devem ser registrados pela equipe
+responsável antes da execução da rotina, identificando somente o escopo
+técnico necessário, a escola envolvida, o motivo, o responsável e a data de
+revisão. Enquanto a preservação estiver ativa, os registros correspondentes
+ficam fora do expurgo. O encerramento deve registrar quem liberou a retenção e
+a justificativa.
+
+O acesso a logs, backups e evidências deve ser concedido por menor privilégio,
+com autenticação individual e registro de leitura ou cópia. Evidências devem
+ser copiadas para armazenamento controlado, com hash e cadeia de custódia; não
+devem ser anexadas a solicitações, auditorias ou tickets com dados pessoais
+desnecessários.
+
+Ordens judiciais devem ser recebidas por canal institucional, validadas pelo
+responsável designado pela escola e encaminhadas à equipe da plataforma com o
+escopo e o prazo documentados. A equipe não deve ampliar a coleta além da
+ordem nem executar eliminação irreversível sem a autorização registrada.
+
+Quando houver incidente, classificar impacto, dados potencialmente afetados,
+escolas envolvidas e urgência; conter o acesso, preservar evidências, corrigir
+a causa e registrar a linha do tempo. A comunicação à escola, aos titulares e
+à ANPD deve ser decidida pelo controlador e pelos responsáveis institucionais,
+conforme a avaliação do caso.
+
 ## Checklist de implantação
 
 1. Aplicar as migrações antes da primeira execução.
