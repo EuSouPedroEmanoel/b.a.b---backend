@@ -4,7 +4,8 @@ import pytest
 from freezegun import freeze_time
 from sqlalchemy import select
 
-from src.models import User
+from src.models import User, UserRole
+from src.security import get_password_hash
 
 
 def test_get_token(client, user):
@@ -51,6 +52,53 @@ async def test_get_token_by_school_identifier(client, session, user, school):
 
     assert response.status_code == HTTPStatus.OK
     assert response.json()['access_token']
+
+
+@pytest.mark.asyncio
+async def test_school_identifier_is_scoped_to_school(
+    client, session, user, school, other_school
+):
+    target = await session.scalar(select(User).where(User.id == user.id))
+    target.school_identifier = 'matricula-compartilhada'
+    other = User(
+        username='other-school-user',
+        school_identifier='matricula-compartilhada',
+        name='Other school user',
+        password=get_password_hash('other-password'),
+        role=UserRole.LIBRARIAN,
+        school_id=other_school.id,
+    )
+    session.add(other)
+    await session.commit()
+
+    first_school = client.post(
+        '/auth/token',
+        data={
+            'username': 'matricula-compartilhada',
+            'school_code': school.code,
+            'password': user.clean_password,
+        },
+    )
+    other_school_login = client.post(
+        '/auth/token',
+        data={
+            'username': 'matricula-compartilhada',
+            'school_code': other_school.code,
+            'password': 'other-password',
+        },
+    )
+    wrong_school = client.post(
+        '/auth/token',
+        data={
+            'username': 'matricula-compartilhada',
+            'school_code': other_school.code,
+            'password': user.clean_password,
+        },
+    )
+
+    assert first_school.status_code == HTTPStatus.OK
+    assert other_school_login.status_code == HTTPStatus.OK
+    assert wrong_school.status_code == HTTPStatus.UNAUTHORIZED
 
 
 def test_get_token_by_cpf(client, school, school_admin, school_admin_token):

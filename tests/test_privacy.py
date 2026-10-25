@@ -384,6 +384,21 @@ def test_public_privacy_policy_exposes_only_school_channel(
     }
 
 
+def test_privacy_request_exposes_fifteen_day_due_date(client, token):
+    before = datetime.now(timezone.utc).replace(tzinfo=None)
+    response = client.post(
+        '/privacy/me/requests',
+        headers=_headers(token),
+        json={'request_type': 'information'},
+    )
+
+    assert response.status_code == HTTPStatus.CREATED
+    due_at = datetime.fromisoformat(response.json()['due_at'])
+    assert timedelta(days=14, hours=23) < due_at - before < timedelta(
+        days=15, minutes=1
+    )
+
+
 @pytest.mark.asyncio
 async def test_pending_anonymization_is_reprocessed_after_last_loan_returned(
     client, session, token, student, student_token, user, book
