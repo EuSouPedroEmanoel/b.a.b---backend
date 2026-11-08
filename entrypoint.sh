@@ -29,6 +29,6 @@ fi
 
 echo "Iniciando aplicação..."
 if [ "${UVICORN_RELOAD:-0}" = "1" ]; then
-  exec poetry run uvicorn --host 0.0.0.0 src.app:app --reload
+  exec poetry run uvicorn --host 0.0.0.0 --port "${PORT:-8000}" src.app:app --reload
 fi
-exec poetry run uvicorn --host 0.0.0.0 src.app:app --workers "${UVICORN_WORKERS:-1}"
+exec poetry run uvicorn --host 0.0.0.0 --port "${PORT:-8000}" src.app:app --workers "${UVICORN_WORKERS:-1}"
