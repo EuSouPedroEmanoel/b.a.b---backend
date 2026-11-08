@@ -27,7 +27,45 @@ from src.routers import loans as loans_router
 from src.schemas import LoanCreate
 from src.security import get_password_hash
 from src.utils.cpf import cpf_storage_values
-from tests.factories import BookCopyFactory, BookFactory, ReservationFactory
+from tests.factories import (
+    BookCopyFactory,
+    BookFactory,
+    ReservationFactory,
+)
+
+
+@pytest.mark.asyncio
+async def test_search_readers_by_name_username_and_cpf_respects_school(
+    session, client, token, student, other_school, teacher_token
+):
+    student.name = 'Marina Oliveira'
+    student.username = 'marina.leitora'
+    (
+        student.cpf_lookup_hash,
+        student.cpf_collision_guard,
+        student.cpf_last2,
+    ) = cpf_storage_values('52998224725')
+    outsider = User(
+        name='Marina Externa', username='marina.externa',
+        school_id=other_school.id, password='unused', role=UserRole.STUDENT,
+    )
+    session.add_all([student, outsider])
+    await session.commit()
+    headers = {'Authorization': f'Bearer {token}'}
+    for params in ({'q': 'MARINA'}, {'q': 'leitora'}, {'cpf': '52998224725'}):
+        response = client.get('/loans/readers', params=params, headers=headers)
+        assert response.status_code == HTTPStatus.OK
+        assert [item['id'] for item in response.json()['items']] == [student.id]
+        assert 'cpf' not in response.json()['items'][0]
+    assert client.get('/loans/readers', headers=headers).status_code == 400
+    assert client.get(
+        '/loans/readers', params={'q': '%%'}, headers=headers
+    ).json()['total'] == 0
+    denied = client.get(
+        '/loans/readers', params={'q': 'marina'},
+        headers={'Authorization': f'Bearer {teacher_token}'},
+    )
+    assert denied.status_code == HTTPStatus.FORBIDDEN
 
 
 @pytest.mark.asyncio

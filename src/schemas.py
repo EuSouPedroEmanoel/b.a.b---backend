@@ -1004,6 +1004,19 @@ class BookSuggestResponse(BaseModel):
 
 # endregion
 # region - Loans
+class LoanReaderPublic(BaseModel):
+    id: int
+    name: str
+    username: str
+    role: UserRole
+    school_id: int
+    turma_numero: int | None = None
+    turma_letra: str | None = None
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class LoanCreate(BaseModel):
     copy_id: int | None = None
     user_id: int | None = None

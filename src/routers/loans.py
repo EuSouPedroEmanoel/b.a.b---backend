@@ -3,8 +3,8 @@ from http import HTTPStatus
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import case, select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -32,8 +32,10 @@ from src.models import (
 from src.permissions import has_personal_reader_capability
 from src.schemas import (
     FilterLoan,
+    FilterUser,
     LoanCreate,
     LoanPublic,
+    LoanReaderPublic,
     PaginatedResponse,
 )
 from src.security import RoleChecker, get_current_user
@@ -60,6 +62,52 @@ LoanOperator = Annotated[
         ])
     ),
 ]
+MIN_READER_SEARCH_LENGTH = 2
+
+
+@router.get('/readers', response_model=PaginatedResponse[LoanReaderPublic])
+async def search_loan_readers(
+    current_user: LoanOperator,
+    session: Session,
+    filters: Annotated[FilterUser, Depends()],
+    q: Annotated[str | None, Query(min_length=2, max_length=100)] = None,
+):
+    if current_user.school_id is None:
+        raise HTTPException(status_code=HTTPStatus.FORBIDDEN)
+    query = select(User).where(User.school_id == current_user.school_id)
+    if filters.cpf:
+        query = query.where(
+            User.cpf_lookup_hash == cpf_lookup_digest(filters.cpf),
+            User.cpf_collision_guard == cpf_collision_guard(filters.cpf),
+        )
+    elif q and len(q.strip()) >= MIN_READER_SEARCH_LENGTH:
+        term = q.strip()
+        query = query.where(or_(
+            User.name.icontains(term, autoescape=True),
+            User.username.icontains(term, autoescape=True),
+        ))
+    else:
+        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST)
+    items, total, page, size, pages = await paginate(
+        session, query.order_by(User.id), filters
+    )
+    return {
+        'items': [
+            {
+                'id': user.id,
+                'name': user.name,
+                'username': user.username,
+                'role': user.role,
+                'school_id': user.school_id,
+                'school_name': None,
+                'turma_numero': user.turma_numero,
+                'turma_letra': user.turma_letra,
+                'is_active': user.is_active,
+            }
+            for user in items
+        ],
+        'total': total, 'page': page, 'size': size, 'pages': pages,
+    }
 
 
 def _apply_situation_filter(query, situation):
