@@ -1,46 +1,33 @@
-name: pipeline
+name: CI e deploy
 on: [push, pull_request]
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
-
-    env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      SECRET_KEY: ${{ secrets.SECRET_KEY }}
-      ALGORITHM: ${{ secrets.ALGORITHM }}
-      ACCESS_TOKEN_EXPIRE_MINUTES: ${{ secrets.ACCESS_TOKEN_EXPIRE_MINUTES }}
-      GOOGLE_BOOKS_API_KEY: ${{ secrets.GOOGLE_BOOKS_API_KEY }}
-      SUPER_ADMIN_USERNAME: ${{ secrets.SUPER_ADMIN_USERNAME }}
-      SUPER_ADMIN_EMAIL: ${{ secrets.SUPER_ADMIN_EMAIL }}
-      SUPER_ADMIN_PASSWORD: ${{ secrets.SUPER_ADMIN_PASSWORD }}
-
+    timeout-minutes: 20
     steps:
-      - name: Copia Arquivos do Projeto
-        uses: actions/checkout@v7
-
-      - name: Subir banco de dados com Docker Compose
-        run: docker compose up -d base-acesso-bibliotecario-db
-
-      - name: Aguardar o PostgreSQL inicializar
-        run: |
-          until docker exec postgres-db pg_isready -U root -d dev-database; do
-            echo "Aguardando conexão com o PostgreSQL..."
-            sleep 2
-          done
-
-      - name: Instalar Poetry
-        run: pipx install poetry
-
-      - name: Instalar o Python e Configurar Cache
-        uses: actions/setup-python@v7
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.14'
-          allow-prereleases: true
-          cache: 'poetry'
-
-      - name: Instalar Dependências
+      - name: Instalar Poetry
+        run: pipx install poetry
+      - name: Instalar dependências
         run: poetry install --no-interaction
-
-      - name: Executar Testes
+      - name: Verificar código e testes
         run: poetry run task test
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Solicitar deploy no Render
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          test -n "$RENDER_DEPLOY_HOOK" || { echo 'Configure RENDER_DEPLOY_HOOK'; exit 1; }
+          curl --fail --silent --show-error --request POST "$RENDER_DEPLOY_HOOK" > /dev/null
