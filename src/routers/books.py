@@ -1722,26 +1722,6 @@ async def list_books(  # noqa: PLR0912, PLR0914, PLR0915
         }:
             if not can_view_restricted_availability:
                 sttm = sttm.where(false())
-        elif book_filter.state is None:
-            # Sem filtro, o leitor vê o acervo disponível e seus próprios
-            # empréstimos/reservas para não perder acesso a esses registros.
-            restricted_search = (
-                can_view_restricted_availability
-                and book_filter.q is not None
-                and book_filter.q.strip().lower() in {
-                    'perdido', 'lost', 'arquivado', 'archived',
-                    'novo', 'new', 'bom', 'good', 'regular', 'fair',
-                    'ruim', 'poor', 'pessimo', 'péssimo', 'bad',
-                }
-            )
-            if restricted_search:
-                sttm = sttm.where(visible_inventory)
-            else:
-                sttm = sttm.where(
-                    (derived_state == BooksStates.AVAILABLE)
-                    | own_loan
-                    | own_reservation
-                )
     elif book_filter.state:
         sttm = sttm.where(
             Book.derived_state_expr(school_scope) == book_filter.state

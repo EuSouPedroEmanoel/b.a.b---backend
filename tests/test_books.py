@@ -567,8 +567,16 @@ async def test_student_book_state_filters_are_personal_and_hide_lost_archived(
     assert available.id in visible_ids
     assert own_borrowed.id in visible_ids
     assert own_reserved.id in visible_ids
+    assert other_borrowed.id in visible_ids
+    assert other_reserved.id in visible_ids
     assert lost.id not in visible_ids
     assert archived.id not in visible_ids
+    assert other_borrowed.id in [
+        item['id']
+        for item in client.get(
+            '/books/', params={'q': other_borrowed.title}, headers=headers
+        ).json()['items']
+    ]
 
 
 @pytest.mark.asyncio
